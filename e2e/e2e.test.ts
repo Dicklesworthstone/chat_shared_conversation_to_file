@@ -8,18 +8,22 @@ import { spawnSync } from "child_process";
 const RUN_E2E = process.env.CSCTM_E2E === "1";
 const SHARE_URL =
   process.env.CSCTM_E2E_URL ?? "https://chatgpt.com/share/69343092-91ac-800b-996c-7552461b9b70";
-const CLAUDE_URL = process.env.CSCTM_E2E_CLAUDE_URL;
-const GEMINI_URL = process.env.CSCTM_E2E_GEMINI_URL;
-const GROK_URL = process.env.CSCTM_E2E_GROK_URL;
+const CLAUDE_URL =
+  process.env.CSCTM_E2E_CLAUDE_URL ?? "https://claude.ai/share/a957d022-c2f1-4efb-ac58-81395f4331fe";
+const GEMINI_URL =
+  process.env.CSCTM_E2E_GEMINI_URL ?? "https://gemini.google.com/share/66d944b0e6b9";
+const GROK_URL =
+  process.env.CSCTM_E2E_GROK_URL ?? "https://grok.com/share/bGVnYWN5_d5329c61-f497-40b7-9472-c555fa71af9c";
 import { fileURLToPath } from "url";
 const ROOT = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const BINARY = process.platform === "win32" ? "csctm.exe" : "csctm";
 const BIN_PATH = path.join(ROOT, "dist", BINARY);
+const E2E_TIMEOUT_MS = process.env.CSCTM_E2E_TIMEOUT_MS ?? "60000";
 
 const describeFn = RUN_E2E ? describe : describe.skip;
-const describeClaude = CLAUDE_URL ? describe : describe.skip;
-const describeGemini = GEMINI_URL ? describe : describe.skip;
-const describeGrok = GROK_URL ? describe : describe.skip;
+const describeClaude = RUN_E2E ? describe : describe.skip;
+const describeGemini = RUN_E2E ? describe : describe.skip;
+const describeGrok = RUN_E2E ? describe : describe.skip;
 
 describeFn("csctm end-to-end", () => {
   let tmpDir: string;
@@ -46,7 +50,7 @@ describeFn("csctm end-to-end", () => {
   });
 
   it("scrapes the shared conversation into a valid markdown file", () => {
-    const run = spawnSync(BIN_PATH, [SHARE_URL], {
+    const run = spawnSync(BIN_PATH, [SHARE_URL, "--timeout-ms", E2E_TIMEOUT_MS], {
       cwd: tmpDir,
       stdio: "inherit"
     });

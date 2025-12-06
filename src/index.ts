@@ -800,6 +800,9 @@ function renderIndex(manifest: PublishHistoryItem[], title = 'csctm exports'): s
 
 export async function publishToGhPages(opts: PublishOpts): Promise<AppConfig> {
   const { files, repo, branch, dir, quiet, dryRun, remember, config, entry } = opts
+  if (!repo || !repo.trim()) {
+    throw new Error('GitHub repository is required for publishing (owner/name).')
+  }
   if (dryRun) {
     const tmp = fs.mkdtempSync(path.join(fs.realpathSync(osTmpDir()), 'csctm-ghp-dry-'))
     const targetDir = path.join(tmp, dir)

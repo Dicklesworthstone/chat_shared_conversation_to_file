@@ -23,9 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/chatgpt_shared_co
 - **Accurate Markdown**: Preserves fenced code blocks with detected language, strips citation pills, normalizes whitespace and line terminators.
 - **Deterministic filenames**: Slugifies the conversation title and auto-increments to avoid clobbering existing files.
 - **Readable progress**: Colorized, step-based console output powered by `chalk`.
-- **ChatGPT + Claude**: Works with public share links from chatgpt.com/share and claude.ai/share.
-- **Gemini**: Also handles public Gemini share links from gemini.google.com/share.
-- **Grok**: Also handles public Grok share links from grok.com/share.
+- **Multi-provider**: Works with public shares from ChatGPT (`chatgpt.com/share`), Claude (`claude.ai/share`), Gemini (`gemini.google.com/share`), and Grok (`grok.com/share`).
 
 ## 💡 Why csctm exists
 - Copy/pasting ChatGPT shares often breaks fenced code blocks, loses language hints, and produces messy filenames. csctm fixes that with stable slugs, language-preserving fences, and collision-proof outputs.
@@ -71,9 +69,7 @@ What you’ll see:
 - `✔ Saved <file>.md` plus the absolute path; an HTML twin (`.html`) is also written by default. Use `--no-html` to skip.
 - (Optional) Publish to GitHub Pages with `--gh-pages-repo <owner/name>` (defaults to remembered repo or `my_shared_chatgpt_conversations`). Confirm by typing `PROCEED` unless you pass `--yes`. Use `--remember` to persist repo/branch/dir; `--forget-gh-pages` to clear; `--dry-run` to simulate.
 - (Optional) Publish HTML/MD to GitHub Pages via `--gh-pages-repo <repo> [--gh-pages-branch gh-pages] [--gh-pages-dir csctm]` with `GITHUB_TOKEN` set.
-- Also works with Claude share links, e.g. `https://claude.ai/share/<id>`.
-- Also works with Gemini share links, e.g. `https://gemini.google.com/share/<id>`.
-- Also works with Grok share links, e.g. `https://grok.com/share/<id>`.
+- Also works with Claude, Gemini, and Grok share links (public).
 
 ## 📋 Flags at a glance
 | Flag | Default | Purpose | Notes |
@@ -161,9 +157,11 @@ bun run build:all
   CSCTM_E2E=1 bun run test:e2e
   ```
 - What E2E checks: exit code 0, `.md` + `.html` exist, minimum length/lines, correct headers/source URL, balanced fences, sanitized HTML (no `<script>`), normalized newlines.
-- Optional Claude E2E: set `CSCTM_E2E_CLAUDE_URL=https://claude.ai/share/<id>` and rerun `bun run test:e2e` (skipped if not set).
-- Optional Gemini E2E: set `CSCTM_E2E_GEMINI_URL=https://gemini.google.com/share/<id>` and rerun `bun run test:e2e` (skipped if not set).
-- Optional Grok E2E: set `CSCTM_E2E_GROK_URL=https://grok.com/share/<id>` and rerun `bun run test:e2e` (skipped if not set).
+- Additional defaults are baked in for provider E2Es:
+  - Claude: `https://claude.ai/share/a957d022-c2f1-4efb-ac58-81395f4331fe`
+  - Gemini: `https://gemini.google.com/share/66d944b0e6b9`
+  - Grok: `https://grok.com/share/bGVnYWN5_d5329c61-f497-40b7-9472-c555fa71af9c`
+  Set `CSCTM_E2E_CLAUDE_URL`, `CSCTM_E2E_GEMINI_URL`, or `CSCTM_E2E_GROK_URL` to override.
 
 ## 🧭 Examples (outputs)
 - Example input: `https://chatgpt.com/share/69343092-91ac-800b-996c-7552461b9b70`
