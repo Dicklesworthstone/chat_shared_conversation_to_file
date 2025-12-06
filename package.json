@@ -1,6 +1,6 @@
 {
   "name": "chat-shared-conversation-to-file",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "CLI to download public share links (ChatGPT/Gemini/Grok) and save clean Markdown + HTML transcripts.",
   "license": "MIT",
   "bin": {
