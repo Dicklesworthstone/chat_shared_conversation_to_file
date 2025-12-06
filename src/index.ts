@@ -341,7 +341,7 @@ const headingSlug = (text: string, counts: Map<string, number>): string => {
   return existing === 0 ? base : `${base}-${existing}`
 }
 
-function renderHtmlDocument(markdown: string, title: string, source: string, retrieved: string): string {
+export function renderHtmlDocument(markdown: string, title: string, source: string, retrieved: string): string {
   const counts = new Map<string, number>()
   const headings: { level: number; text: string; id: string }[] = []
 
@@ -754,8 +754,30 @@ function renderIndex(manifest: PublishHistoryItem[], title = 'csctm exports'): s
 </html>`
 }
 
-async function publishToGhPages(opts: PublishOpts): Promise<AppConfig> {
+export async function publishToGhPages(opts: PublishOpts): Promise<AppConfig> {
   const { files, repo, branch, dir, quiet, dryRun, remember, config, entry } = opts
+  if (dryRun) {
+    const tmp = fs.mkdtempSync(path.join(fs.realpathSync(osTmpDir()), 'csctm-ghp-dry-'))
+    const targetDir = path.join(tmp, dir)
+    fs.mkdirSync(targetDir, { recursive: true })
+    const manifest: PublishHistoryItem[] = []
+    const manifestPath = path.join(targetDir, 'manifest.json')
+    const manifestEntry: PublishHistoryItem = {
+      title: entry.title,
+      md: files.find(f => f.kind === 'md')?.path ? path.basename(files.find(f => f.kind === 'md')!.path) : undefined,
+      html: files.find(f => f.kind === 'html')?.path ? path.basename(files.find(f => f.kind === 'html')!.path) : undefined,
+      addedAt: entry.addedAt
+    }
+    for (const file of files) {
+      const dest = path.join(targetDir, path.basename(file.path))
+      fs.copyFileSync(file.path, dest)
+    }
+    manifest.push(manifestEntry)
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
+    const indexHtml = renderIndex(manifest)
+    fs.writeFileSync(path.join(targetDir, 'index.html'), indexHtml, 'utf8')
+    return config
+  }
   const token = await resolveGitHubToken()
 
   const { repo: repoName, url } = resolveRepoUrl(repo)
@@ -1060,7 +1082,7 @@ async function main(): Promise<void> {
         `Repo: ${ghRepoResolved}  Branch: ${ghBranchResolved}  Dir: ${ghDirResolved}`
       ].join('\n')
       await confirmPublish(publishSummary, yes)
-      ensureGhAvailable(autoInstallGh)
+      if (!dryRun) ensureGhAvailable(autoInstallGh)
       step(idx++, totalSteps, chalk.cyan('Publishing to GitHub Pages'))
       const updatedConfig = await publishToGhPages({
         files: writtenFiles,

@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import os from "os";
 import path from "path";
-import { slugify, uniquePath } from "./index";
+import { slugify, uniquePath, renderHtmlDocument, publishToGhPages } from "./index";
 
 describe("slugify", () => {
   it("slugifies and lowercases titles", () => {
@@ -25,6 +25,46 @@ describe("slugify", () => {
   it("truncates very long titles", () => {
     const long = "a".repeat(200);
     expect(slugify(long)).toHaveLength(120);
+  });
+});
+
+describe("renderHtmlDocument", () => {
+  it("renders HTML with inline styles, toc, and no script tags", () => {
+    const md = "# Title\n\n## Section\n\nContent with `code`."
+    const html = renderHtmlDocument(md, "Sample Title", "https://example.com", "2024-01-01T00:00:00.000Z")
+    expect(html.startsWith("<!doctype html>")).toBe(true)
+    expect(html).toContain("<style>")
+    expect(html).toContain("Contents")
+    expect(html).toContain("language-")
+    expect(/<script/i.test(html)).toBe(false)
+  });
+});
+
+describe("publishToGhPages (dry run)", () => {
+  it("generates manifest and index without pushing", async () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "csctm-ghp-dry-"));
+    const mdPath = path.join(tmp, "sample.md");
+    const htmlPath = path.join(tmp, "sample.html");
+    writeFileSync(mdPath, "# Test\n", "utf8");
+    writeFileSync(htmlPath, "<!doctype html><html></html>", "utf8");
+
+    const cfg = await publishToGhPages({
+      files: [
+        { path: mdPath, kind: "md" },
+        { path: htmlPath, kind: "html" }
+      ],
+      repo: "example/example",
+      branch: "gh-pages",
+      dir: "site",
+      quiet: true,
+      dryRun: true,
+      remember: false,
+      config: {},
+      entry: { title: "Sample Title", md: "sample.md", html: "sample.html", addedAt: "2024-01-01T00:00:00.000Z" }
+    });
+
+    // dry-run should not modify config or attempt network
+    expect(cfg).toEqual({});
   });
 });
 

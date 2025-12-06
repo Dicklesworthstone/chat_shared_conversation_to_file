@@ -1,3 +1,4 @@
+/// <reference types="bun-types" />
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
 import os from "os";
@@ -7,7 +8,8 @@ import { spawnSync } from "child_process";
 const RUN_E2E = process.env.CSCTM_E2E === "1";
 const SHARE_URL =
   process.env.CSCTM_E2E_URL ?? "https://chatgpt.com/share/69343092-91ac-800b-996c-7552461b9b70";
-const ROOT = path.resolve(path.join(import.meta.dir, ".."));
+import { fileURLToPath } from "url";
+const ROOT = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const BINARY = process.platform === "win32" ? "csctm.exe" : "csctm";
 const BIN_PATH = path.join(ROOT, "dist", BINARY);
 
