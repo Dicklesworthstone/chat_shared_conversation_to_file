@@ -8,7 +8,7 @@ on:
     types: [published]
 
 env:
-  BUN_VERSION: "1.1.29"
+  BUN_VERSION: "1.3.3"
 
 permissions:
   contents: write
