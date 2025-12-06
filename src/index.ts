@@ -10,6 +10,7 @@ import hljs from 'highlight.js'
 import { spawnSync } from 'child_process'
 import os from 'os'
 import readline from 'readline'
+import { randomUUID } from 'crypto'
 import pkg from '../package.json' assert { type: 'json' }
 
 type Provider = 'chatgpt' | 'claude' | 'gemini' | 'grok'
@@ -251,187 +252,377 @@ function forgetGhConfig(): void {
 }
 const INLINE_STYLE = `
 :root {
-  color-scheme: light;
+  --color-bg: #f8fafc;
+  --color-bg-alt: #ffffff;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-text-subtle: #94a3b8;
+  --color-border: #e2e8f0;
+  --color-border-hover: #cbd5e1;
+  --color-accent: #6366f1;
+  --color-accent-light: #818cf8;
+  --color-accent-bg: rgba(99, 102, 241, 0.08);
+  --color-success: #10b981;
+  --color-code-bg: #1e293b;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.12);
+  --shadow-xl: 0 24px 64px rgba(15, 23, 42, 0.16);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco, Consolas, monospace;
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0f172a;
+    --color-bg-alt: #1e293b;
+    --color-text: #f1f5f9;
+    --color-text-muted: #94a3b8;
+    --color-text-subtle: #64748b;
+    --color-border: #334155;
+    --color-border-hover: #475569;
+    --color-accent: #818cf8;
+    --color-accent-light: #a5b4fc;
+    --color-accent-bg: rgba(129, 140, 248, 0.12);
+    --color-code-bg: #0f172a;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.4);
+    --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.5);
+  }
 }
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.page-wrapper {
+  position: relative;
+  min-height: 100vh;
+  padding: clamp(24px, 5vw, 64px);
+}
+.page-wrapper::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 10% 0%, var(--color-accent-bg), transparent 50%),
+    radial-gradient(ellipse 60% 50% at 90% 10%, rgba(45, 212, 191, 0.06), transparent 40%),
+    radial-gradient(ellipse 50% 80% at 50% 100%, rgba(251, 146, 60, 0.04), transparent 50%);
+  pointer-events: none;
+  z-index: -1;
+}
+.container {
+  max-width: 860px;
   margin: 0 auto;
-  padding: clamp(24px, 4vw, 40px) clamp(16px, 4vw, 32px) clamp(32px, 6vw, 56px);
-  max-width: 980px;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  line-height: 1.65;
-  color: #0f172a;
-  background: radial-gradient(circle at 20% 20%, #f8fafc 0, #f1f5f9 25%, #e2e8f0 60%, #f8fafc 100%);
+  position: relative;
 }
 h1, h2, h3, h4, h5, h6 {
-  color: #0f172a;
-  line-height: 1.25;
-  margin: 1.4em 0 0.5em;
+  color: var(--color-text);
+  line-height: 1.3;
+  margin: 0 0 0.5em;
+  font-weight: 600;
   letter-spacing: -0.02em;
 }
 h1 {
-  font-size: clamp(2rem, 2.5vw, 2.6rem);
-  border-left: 5px solid #6366f1;
-  padding-left: 12px;
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.75em;
 }
 h2 {
-  font-size: clamp(1.35rem, 1.8vw, 1.75rem);
-  border-left: 4px solid #8b5cf6;
-  padding-left: 10px;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 2.5em;
+  margin-bottom: 1em;
+  padding-bottom: 0.5em;
+  border-bottom: 1px solid var(--color-border);
 }
-p { margin: 0 0 1.1em; }
-a { color: #2563eb; text-decoration: none; }
-a:hover { text-decoration: underline; }
+h2::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 1em;
+  background: var(--color-accent);
+  border-radius: 2px;
+  margin-right: 0.75em;
+  vertical-align: middle;
+}
+h3 { font-size: 1.25rem; margin-top: 1.75em; }
+h4 { font-size: 1.125rem; margin-top: 1.5em; }
+p {
+  margin: 0 0 1.25em;
+  color: var(--color-text);
+}
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color var(--transition-fast);
+}
+a:hover {
+  color: var(--color-accent-light);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 code, pre {
-  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-feature-settings: "calt" 1, "liga" 1;
+  font-family: var(--font-mono);
+  font-feature-settings: "calt" 1, "liga" 1, "ss01" 1;
 }
 code {
-  background: #e2e8f0;
-  color: #0f172a;
-  padding: 0.15em 0.35em;
-  border-radius: 6px;
-  font-size: 0.95em;
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  padding: 0.2em 0.45em;
+  border-radius: var(--radius-sm);
+  font-size: 0.875em;
+  font-weight: 500;
 }
 .code-block {
   position: relative;
-  margin: 1.25em 0;
+  margin: 1.5em 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lg);
+  background: var(--color-code-bg);
 }
-.code-lang {
+.code-header {
   position: absolute;
-  top: 8px;
-  right: 12px;
-  padding: 4px 10px;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.code-dots {
+  display: flex;
+  gap: 6px;
+}
+.code-dots span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+}
+.code-dots span:nth-child(1) { background: #ff5f57; }
+.code-dots span:nth-child(2) { background: #febc2e; }
+.code-dots span:nth-child(3) { background: #28c840; }
+.code-lang {
   font-size: 0.75rem;
-  color: #cbd5e1;
-  background: rgba(15, 23, 42, 0.7);
-  border: 1px solid #1f2937;
-  border-radius: 999px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 pre {
-  background: #0b1221;
+  background: transparent;
   color: #e2e8f0;
-  padding: 18px 16px;
+  padding: 56px 20px 20px;
   overflow: auto;
-  border-radius: 12px;
-  border: 1px solid #1f2937;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 10px 30px rgba(15, 23, 42, 0.25);
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.7;
 }
 pre code { background: none; padding: 0; color: inherit; }
 blockquote {
-  margin: 1.2em 0;
-  padding: 0.75em 1.1em;
-  border-left: 5px solid #cbd5e1;
-  background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
-  color: #0f172a;
-  border-radius: 8px;
+  margin: 1.5em 0;
+  padding: 1em 1.25em;
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--color-text);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  font-style: italic;
 }
-table { border-collapse: collapse; margin: 1.2em 0; width: 100%; }
-th, td { padding: 10px 12px; border: 1px solid #e2e8f0; }
-th { background: #f8fafc; text-align: left; }
-ul, ol { padding-left: 1.4em; }
-hr { border: 0; border-top: 1px solid #e2e8f0; margin: 2em 0; }
+blockquote p:last-child { margin-bottom: 0; }
+table {
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  background: var(--color-bg-alt);
+}
+th, td {
+  padding: 12px 16px;
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+th {
+  background: var(--color-accent-bg);
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+}
+tr:hover { background: var(--color-accent-bg); }
+ul, ol {
+  padding-left: 1.5em;
+  margin: 1em 0;
+}
+li { margin: 0.5em 0; }
+li::marker { color: var(--color-accent); }
+hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--color-border), transparent);
+  margin: 3em 0;
+}
 .article {
-  background: rgba(255,255,255,0.9);
-  backdrop-filter: blur(6px);
-  padding: clamp(22px, 3vw, 32px);
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+  background: var(--color-bg-alt);
+  padding: clamp(28px, 5vw, 48px);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-xl);
+  position: relative;
+  overflow: hidden;
 }
-.meta {
+.article::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-accent), #06b6d4, #10b981);
+}
+.header {
+  margin-bottom: 2em;
+  padding-bottom: 1.5em;
+  border-bottom: 1px solid var(--color-border);
+}
+.meta-row {
   display: inline-flex;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
   flex-wrap: wrap;
-  color: #475569;
-  font-size: 0.95em;
-  margin: 0.5em 0 1.4em;
+  margin-bottom: 1em;
 }
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 6px 12px;
-  border-radius: 999px;
-  background: #e2e8f0;
-  color: #0f172a;
-  border: 1px solid #cbd5e1;
+  border-radius: 9999px;
+  background: var(--color-accent-bg);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+.pill:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+}
+.pill a {
+  color: inherit;
+  font-weight: inherit;
 }
 .toc {
-  margin: 1.5em 0 2em;
-  padding: 14px 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  margin: 0 0 2em;
+  padding: 20px 24px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
 }
-.toc h3 {
-  margin: 0 0 0.5em;
-  font-size: 1rem;
-  color: #0f172a;
+.toc-title {
+  margin: 0 0 0.75em;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
 }
-.toc ul {
-  margin: 0;
-  padding-left: 1.2em;
+.toc ul { margin: 0; padding-left: 0; list-style: none; }
+.toc li { margin: 0.4em 0; }
+.toc a {
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+  transition: color var(--transition-fast);
 }
-.hljs { color: #e2e8f0; }
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-literal,
-.hljs-section,
-.hljs-link { color: #7aa2f7; }
-.hljs-function .hljs-title,
-.hljs-title.class_,
-.hljs-title.function_ { color: #9ece6a; }
-.hljs-attr,
-.hljs-name,
-.hljs-tag { color: #7dcfff; }
-.hljs-string,
-.hljs-meta .hljs-string { color: #e0af68; }
-.hljs-number,
-.hljs-regexp,
-.hljs-variable { color: #f7768e; }
-.hljs-built_in,
-.hljs-builtin-name { color: #bb9af7; }
-.hljs-comment,
-.hljs-quote { color: #94a3b8; }
-.hljs-addition { color: #2ec27e; }
-.hljs-deletion { color: #ff6b6b; }
-@media (prefers-color-scheme: dark) {
-  body {
-    color: #e2e8f0;
-    background: radial-gradient(circle at 20% 20%, #0f172a 0, #0b1221 45%, #0f172a 100%);
-  }
-  .article {
-    background: rgba(15, 23, 42, 0.85);
-    border: 1px solid rgba(148, 163, 184, 0.28);
-  }
-  h1, h2, h3, h4, h5, h6 { color: #e2e8f0; }
-  a { color: #93c5fd; }
-  code { background: #1f2937; color: #e2e8f0; }
-  blockquote {
-    border-left-color: #475569;
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.7), rgba(51, 65, 85, 0.8));
-    color: #e2e8f0;
-  }
-  th { background: #111827; border-color: #1f2937; }
-  td { border-color: #1f2937; }
-  hr { border-top-color: #1f2937; }
-  .pill {
-    background: #1f2937;
-    color: #e2e8f0;
-    border-color: #334155;
-  }
-  .toc {
-    background: #111827;
-    border-color: #1f2937;
-  }
+.toc a:hover { color: var(--color-accent); }
+.message { margin-bottom: 2em; }
+.message:last-child { margin-bottom: 0; }
+.hljs { color: #e2e8f0; background: transparent; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: #c4b5fd; }
+.hljs-function .hljs-title, .hljs-title.class_, .hljs-title.function_ { color: #67e8f9; }
+.hljs-attr, .hljs-name, .hljs-tag { color: #7dd3fc; }
+.hljs-string, .hljs-meta .hljs-string { color: #a5f3c4; }
+.hljs-number, .hljs-regexp, .hljs-variable { color: #fda4af; }
+.hljs-built_in, .hljs-builtin-name { color: #fcd34d; }
+.hljs-comment, .hljs-quote { color: #64748b; font-style: italic; }
+.hljs-addition { color: #4ade80; background: rgba(74, 222, 128, 0.1); }
+.hljs-deletion { color: #f87171; background: rgba(248, 113, 113, 0.1); }
+.footer {
+  margin-top: 3em;
+  padding-top: 1.5em;
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+  color: var(--color-text-subtle);
+  font-size: 0.875rem;
 }
+.scroll-top {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: all var(--transition-base);
+  box-shadow: var(--shadow-lg);
+}
+.scroll-top.visible { opacity: 1; visibility: visible; }
+.scroll-top:hover { transform: translateY(-2px); box-shadow: var(--shadow-xl); }
 @media print {
-  body { background: white; color: black; box-shadow: none; }
-  .article { box-shadow: none; border: 1px solid #e5e7eb; }
-  pre { page-break-inside: avoid; }
-  h2, h3 { page-break-after: avoid; }
+  body { background: white !important; color: black !important; padding: 24px !important; }
+  .page-wrapper::before { display: none; }
+  .article { box-shadow: none !important; border: 1px solid #e5e7eb !important; }
+  .article::before { display: none; }
+  pre { page-break-inside: avoid; background: #f1f5f9 !important; color: #1e293b !important; }
+  h2, h3 { page-break-after: avoid; color: black !important; }
+  .scroll-top { display: none !important; }
+  a { color: #2563eb !important; }
+}
+@media (max-width: 640px) {
+  .article { padding: 20px; border-radius: var(--radius-lg); }
+  .meta-row { flex-direction: column; align-items: flex-start; }
+  .pill { font-size: 0.75rem; }
+  pre { font-size: 0.8rem; padding: 48px 16px 16px; }
 }
 `.trim()
 
@@ -469,14 +660,24 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
     highlight(code: string, lang: string): string {
       if (lang && hljs.getLanguage(lang)) {
         const { value } = hljs.highlight(code, { language: lang, ignoreIllegals: true })
-        return `<div class="code-block"><div class="code-lang">${lang}</div><pre><code class="hljs language-${lang}">${value}</code></pre></div>`
+        return `<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">${lang}</span></div><pre><code class="hljs language-${lang}">${value}</code></pre></div>`
       }
       const auto = hljs.highlightAuto(code)
       const detected = auto.language || 'text'
       const value = auto.value || md.utils.escapeHtml(code)
-      const badge = detected ? `<div class="code-lang">${detected}</div>` : ''
-      const langClass = detected ? ` language-${detected}` : ''
-      return `<div class="code-block">${badge}<pre><code class="hljs${langClass}">${value}</code></pre></div>`
+      return `<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">${detected}</span></div><pre><code class="hljs language-${detected}">${value}</code></pre></div>`
+    }
+  })
+  md.set({
+    highlight(code: string, lang: string): string {
+      if (lang && hljs.getLanguage(lang)) {
+        const { value } = hljs.highlight(code, { language: lang, ignoreIllegals: true })
+        return `<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">${lang}</span></div><pre><code class="hljs language-${lang}">${value}</code></pre></div>`
+      }
+      const auto = hljs.highlightAuto(code)
+      const detected = auto.language || 'text'
+      const value = auto.value || md.utils.escapeHtml(code)
+      return `<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">${detected}</span></div><pre><code class="hljs language-${detected}">${value}</code></pre></div>`
     }
   })
 
@@ -505,10 +706,10 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
   const toc =
     tocHeadings.length > 0
       ? `<div class="toc">
-    <h3>Contents</h3>
+    <div class="toc-title">Contents</div>
     <ul>
       ${tocHeadings
-        .map(h => `<li style="margin-left:${(h.level - 2) * 12}px"><a href="#${h.id}">${escapeHtml(h.text)}</a></li>`)
+        .map(h => `<li style="margin-left:${(h.level - 2) * 16}px"><a href="#${h.id}">${escapeHtml(h.text)}</a></li>`)
         .join('\n')}
     </ul>
   </div>`
@@ -519,20 +720,43 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
   <title>${safeTitle}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>${INLINE_STYLE}</style>
 </head>
 <body>
-  <article class="article">
-    <div class="meta">
-      <span class="pill">📄 ${safeTitle}</span>
-      <span class="pill">🔗 <a href="${safeSource}" rel="noreferrer noopener">${safeSource}</a></span>
-      <span class="pill">⏰ ${safeRetrieved}</span>
+  <div class="page-wrapper">
+    <div class="container">
+      <article class="article">
+        <header class="header">
+          <div class="meta-row">
+            <span class="pill">🔗 <a href="${safeSource}" target="_blank" rel="noreferrer noopener">Source</a></span>
+            <span class="pill">📅 ${safeRetrieved.split('T')[0]}</span>
+          </div>
+          <h1>${safeTitle}</h1>
+        </header>
+        ${toc}
+        <div class="content">
+          ${body}
+        </div>
+        <footer class="footer">
+          Exported with <a href="https://github.com/Dicklesworthstone/chat_shared_conversation_to_file" target="_blank">csctf</a>
+        </footer>
+      </article>
     </div>
-    <h1>${safeTitle}</h1>
-    ${toc}
-    ${body}
-  </article>
+    <button class="scroll-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Scroll to top">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
+    </button>
+  </div>
+  <script>
+    const btn = document.querySelector('.scroll-top');
+    window.addEventListener('scroll', () => {
+      btn.classList.toggle('visible', window.scrollY > 300);
+    });
+  </script>
 </body>
 </html>`
 }
@@ -1153,14 +1377,20 @@ function resolveRepoUrl(input: string): { repo: string; url: string } {
 function renderIndex(manifest: PublishHistoryItem[], title = 'csctf exports'): string {
   const cards = manifest
     .map(item => {
-      const mdLink = item.md ? `<a href="./${encodeURIComponent(item.md)}">Markdown</a>` : ''
-      const htmlLink = item.html ? `<a href="./${encodeURIComponent(item.html)}">HTML</a>` : ''
-      const links = [htmlLink, mdLink].filter(Boolean).join(' • ')
-      return `<div class="card">
-  <div class="card-title">${escapeHtml(item.title)}</div>
-  <div class="card-meta">Added: ${escapeHtml(item.addedAt)}</div>
-  <div class="card-links">${links}</div>
-</div>`
+      const mdLink = item.md ? `<a href="./${encodeURIComponent(item.md)}" class="btn secondary">Markdown</a>` : ''
+      const htmlLink = item.html ? `<a href="./${encodeURIComponent(item.html)}" class="btn primary">HTML</a>` : ''
+      const links = [htmlLink, mdLink].filter(Boolean).join('')
+      const date = new Date(item.addedAt)
+      const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      return `<article class="card">
+  <div class="card-content">
+    <div class="card-header">
+      <time class="card-date">${formattedDate}</time>
+    </div>
+    <h2 class="card-title">${escapeHtml(item.title)}</h2>
+    <div class="card-actions">${links}</div>
+  </div>
+</article>`
     })
     .join('\n')
 
@@ -1169,29 +1399,251 @@ function renderIndex(manifest: PublishHistoryItem[], title = 'csctf exports'): s
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark" />
   <title>${escapeHtml(title)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #0f172a; margin: 0; padding: 32px; color: #e2e8f0; }
-    h1 { margin: 0 0 18px; font-size: 1.8rem; }
-    .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-    .card { background: rgba(15,23,42,0.75); border: 1px solid #1f2937; border-radius: 12px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
-    .card-title { font-weight: 600; margin-bottom: 6px; }
-    .card-meta { font-size: 0.9rem; color: #cbd5e1; margin-bottom: 8px; }
-    .card-links a { color: #93c5fd; text-decoration: none; font-weight: 600; }
-    .card-links a:hover { text-decoration: underline; }
-    @media (prefers-color-scheme: light) {
-      body { background: #f8fafc; color: #0f172a; }
-      .card { background: #ffffff; border: 1px solid #e2e8f0; box-shadow: 0 10px 20px rgba(0,0,0,0.08); }
-      .card-meta { color: #475569; }
-      .card-links a { color: #2563eb; }
+    :root {
+      --color-bg: #fafbfc;
+      --color-bg-alt: #ffffff;
+      --color-bg-elevated: #ffffff;
+      --color-text: #0f172a;
+      --color-text-secondary: #475569;
+      --color-text-muted: #64748b;
+      --color-border: #e2e8f0;
+      --color-border-hover: #cbd5e1;
+      --color-accent: #6366f1;
+      --color-accent-hover: #4f46e5;
+      --color-accent-subtle: rgba(99, 102, 241, 0.1);
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+      --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.08);
+      --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.12);
+      --shadow-glow: 0 0 0 3px var(--color-accent-subtle);
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 24px;
+      --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --color-bg: #0a0f1a;
+        --color-bg-alt: #111827;
+        --color-bg-elevated: #1e293b;
+        --color-text: #f1f5f9;
+        --color-text-secondary: #cbd5e1;
+        --color-text-muted: #94a3b8;
+        --color-border: #1e293b;
+        --color-border-hover: #334155;
+        --color-accent: #818cf8;
+        --color-accent-hover: #a5b4fc;
+        --color-accent-subtle: rgba(129, 140, 248, 0.15);
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+        --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+        --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--color-bg);
+      color: var(--color-text);
+      line-height: 1.6;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .hero {
+      position: relative;
+      padding: clamp(48px, 10vw, 96px) clamp(24px, 5vw, 64px) clamp(32px, 6vw, 64px);
+      text-align: center;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: 
+        radial-gradient(ellipse 100% 80% at 50% -20%, var(--color-accent-subtle), transparent 60%),
+        radial-gradient(ellipse 80% 100% at 100% 0%, rgba(6, 182, 212, 0.08), transparent 50%),
+        radial-gradient(ellipse 60% 80% at 0% 50%, rgba(236, 72, 153, 0.06), transparent 50%);
+      pointer-events: none;
+    }
+    .hero-content {
+      position: relative;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, var(--color-accent), #06b6d4);
+      border-radius: var(--radius-lg);
+      margin-bottom: 24px;
+      box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255,255,255,0.1) inset;
+    }
+    .logo svg { width: 32px; height: 32px; color: white; }
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, var(--color-text) 0%, var(--color-text-secondary) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle {
+      margin: 0;
+      font-size: clamp(1rem, 2vw, 1.125rem);
+      color: var(--color-text-muted);
+      max-width: 480px;
+      margin: 0 auto;
+    }
+    .main {
+      flex: 1;
+      padding: 0 clamp(24px, 5vw, 64px) clamp(48px, 8vw, 96px);
+    }
+    .grid-container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .grid {
+      display: grid;
+      gap: 20px;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    }
+    .card {
+      background: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      transition: all var(--transition);
+      position: relative;
+    }
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: var(--color-accent);
+      box-shadow: var(--shadow-lg), var(--shadow-glow);
+    }
+    .card-content { display: flex; flex-direction: column; gap: 12px; }
+    .card-header { display: flex; align-items: center; justify-content: space-between; }
+    .card-date {
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      padding: 4px 10px;
+      background: var(--color-accent-subtle);
+      border-radius: 9999px;
+    }
+    .card-title {
+      margin: 0;
+      font-size: 1.0625rem;
+      font-weight: 600;
+      color: var(--color-text);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .card-actions { display: flex; gap: 10px; margin-top: 4px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 18px;
+      border-radius: 9999px;
+      font-weight: 600;
+      text-decoration: none;
+      font-size: 0.875rem;
+      border: 1px solid transparent;
+      transition: all var(--transition);
+      cursor: pointer;
+    }
+    .btn.primary {
+      background: var(--color-accent);
+      color: white;
+      box-shadow: var(--shadow-sm);
+    }
+    .btn.primary:hover {
+      background: var(--color-accent-hover);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+    .btn.secondary {
+      background: var(--color-bg-alt);
+      color: var(--color-text-secondary);
+      border-color: var(--color-border);
+    }
+    .btn.secondary:hover {
+      border-color: var(--color-border-hover);
+      background: var(--color-bg);
+    }
+    .empty {
+      text-align: center;
+      padding: 64px 24px;
+      color: var(--color-text-muted);
+    }
+    .empty-icon {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 16px;
+      opacity: 0.5;
+    }
+    .footer {
+      text-align: center;
+      padding: 32px;
+      color: var(--color-text-muted);
+      font-size: 0.875rem;
+      border-top: 1px solid var(--color-border);
+    }
+    .footer a { color: var(--color-accent); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: 1fr; }
+      .card { padding: 20px; }
     }
   </style>
 </head>
 <body>
-  <h1>${escapeHtml(title)}</h1>
-  <div class="grid">
-    ${cards}
+  <div class="page">
+    <header class="hero">
+      <div class="hero-content">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        </div>
+        <h1>${escapeHtml(title)}</h1>
+        <p class="subtitle">Your AI conversations, beautifully rendered and shareable</p>
+      </div>
+    </header>
+    <main class="main">
+      <div class="grid-container">
+        ${manifest.length > 0 ? `<div class="grid">${cards}</div>` : `
+        <div class="empty">
+          <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+          </svg>
+          <p>No conversations yet</p>
+        </div>
+        `}
+      </div>
+    </main>
+    <footer class="footer">
+      Powered by <a href="https://github.com/Dicklesworthstone/chat_shared_conversation_to_file" target="_blank">csctf</a>
+    </footer>
   </div>
 </body>
 </html>`
@@ -1492,6 +1944,50 @@ async function scrape(
     }
   }
 
+  const fetchClaudeSnapshotViaNode = (endpoint: string, shareUrl: string): ClaudeSnapshot | null => {
+    try {
+      const script = `
+        const { chromium } = require('playwright-chromium');
+        (async() => {
+          const ws = process.env.CSCTF_CLAUDE_WS_URL || '${endpoint}';
+          const url = '${shareUrl}';
+          const id = url.replace(/^https?:\\/\\/claude\\.ai\\/share\\//i, '');
+          const browser = await chromium.connectOverCDP(ws, { timeout: 30000 });
+          const context = browser.contexts()[0] || (await browser.newContext());
+          const page = context.pages()[0] || (await context.newPage());
+          const resp = await page.evaluate(async snapId => {
+            const r = await fetch(
+              'https://claude.ai/api/chat_snapshots/' + snapId + '?rendering_mode=messages&render_all_tools=true',
+              { credentials: 'include' }
+            );
+            const text = await r.text();
+            return { ok: r.ok, status: r.status, text };
+          }, id);
+          await browser.close();
+          if (!resp.ok) {
+            console.error(JSON.stringify({ ok: false, status: resp.status }));
+            process.exit(2);
+          }
+          console.log(resp.text);
+        })().catch(err => { console.error(err); process.exit(1); });
+      `
+      const tmp = path.join(os.tmpdir(), `csctf-cdp-${randomUUID()}.js`)
+      fs.writeFileSync(tmp, script, 'utf8')
+      const res = spawnSync('node', [tmp], {
+        env: { ...process.env, CSCTF_CLAUDE_WS_URL: endpoint },
+        encoding: 'utf8',
+        timeout: Math.max(30000, timeoutMs)
+      })
+      fs.unlinkSync(tmp)
+      if (res.status === 0 && res.stdout) {
+        return JSON.parse(res.stdout.trim()) as ClaudeSnapshot
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
   const resolveChromiumExecutable = (): string | undefined => {
     const candidates =
       process.platform === 'darwin'
@@ -1533,8 +2029,13 @@ async function scrape(
       // Attach to an existing remote-debug Chrome if provided; otherwise launch a temp profile headful Chrome with RD port.
       const existingWs = opts.claudeAttachWs ?? process.env.CSCTF_CLAUDE_WS_URL
       if (existingWs) {
-        const wsEndpoint = existingWs.startsWith('http') ? existingWs.replace(/^http/, 'ws') : existingWs
-        cdpBrowser = await chromium.connectOverCDP(wsEndpoint, { timeout: Math.max(30000, timeoutMs) })
+        const endpoint = existingWs
+        const nodeSnapshot = fetchClaudeSnapshotViaNode(endpoint, url)
+        if (nodeSnapshot) {
+          const rendered = await renderFromClaudeSnapshot(nodeSnapshot, td)
+          if (rendered) return rendered
+        }
+        cdpBrowser = await chromium.connectOverCDP(endpoint, { timeout: Math.max(30000, timeoutMs) })
         context = cdpBrowser.contexts()[0] ?? (await cdpBrowser.newContext())
         const pages = context.pages()
         page = pages[0] ?? (await context.newPage())
