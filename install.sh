@@ -103,11 +103,11 @@ detect_target() {
 
   ASSET=""
   case "${OS}-${ARCH}" in
-    linux-x86_64) ASSET="csctf-linux" ;;
-    linux-aarch64) warn "No prebuilt binary for linux/aarch64; will build from source (requires git + bun)"; FROM_SOURCE=1 ;;
-    darwin-arm64) ASSET="csctf-macos" ;;
-    darwin-x86_64) warn "No prebuilt binary for macOS Intel; will build from source (requires git + bun)"; FROM_SOURCE=1 ;;
-    msys*-*|mingw*-*|cygwin*-*) ASSET="csctf-windows.exe" ;;
+    linux-x86_64) ASSET="csctf-linux-x64" ;;
+    linux-aarch64) ASSET="csctf-linux-arm64" ;;
+    darwin-arm64) ASSET="csctf-macos-arm64" ;;
+    darwin-x86_64) ASSET="csctf-macos-x64" ;;
+    msys*-*|mingw*-*|cygwin*-*) ASSET="csctf-windows-x64.exe" ;;
     *) warn "Unknown platform ${OS}/${ARCH}; will build from source (requires git + bun)"; FROM_SOURCE=1 ;;
   esac
 }

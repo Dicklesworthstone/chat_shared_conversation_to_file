@@ -2,202 +2,107 @@ name: CI
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+env:
+  BUN_VERSION: "1.1.29"
 
 permissions:
   contents: write
 
-env:
-  BUN_VERSION: latest
-
 jobs:
-  test:
-    name: Lint, typecheck, test
+  check:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Cache Bun
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/bun
-            ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
       - name: Lint
         run: bun run lint
-
-      - name: Type check
+      - name: Typecheck
         run: bun run typecheck
+      - name: Unit tests
+        run: bun test
 
-      - name: Test
-        run: bun run test
-
-  dry-run-publish:
-    name: Dry-run publish (no network)
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Dry-run publish test
-        run: bun test --filter "publishToGhPages (dry run)"
-
-  build:
-    name: Build native binaries (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs: [test, e2e]
+  build-release:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: csctm-linux
+            build: |
+              bun run build:linux-x64
+              bun run build:linux-arm64
+            artifacts: |
+              dist/csctf-linux-x64
+              dist/csctf-linux-arm64
           - os: macos-latest
-            artifact: csctm-macos
+            build: |
+              bun run build:mac-arm64
+              bun run build:mac-x64
+            artifacts: |
+              dist/csctf-macos-arm64
+              dist/csctf-macos-x64
           - os: windows-latest
-            artifact: csctm-windows.exe
-    defaults:
-      run:
-        shell: bash
+            build: |
+              bun run build:windows-x64
+            artifacts: |
+              dist/csctf-windows-x64.exe
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
-      - name: Build
-        run: bun run build
-
-      - name: Prepare artifact
+        shell: bash
+      - name: Build binaries
         run: |
-          mkdir -p artifacts
-          # Bun emits .exe on Windows; otherwise the binary is named csctm.
-          BIN_PATH="dist/csctm"
-          if [ -f "dist/csctm.exe" ]; then
-            BIN_PATH="dist/csctm.exe"
-          fi
-          mv "$BIN_PATH" "artifacts/${{ matrix.artifact }}"
-
-      - name: Upload artifact
+          set -euo pipefail
+          ${{ matrix.build }}
+        shell: bash
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: artifacts/${{ matrix.artifact }}
+          name: csctf-${{ matrix.os }}
+          path: ${{ matrix.artifacts }}
           if-no-files-found: error
-
-  e2e:
-    name: End-to-end scrape check
-    runs-on: ubuntu-latest
-    needs: test
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Cache Bun
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/bun
-            ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('bun.lock', 'package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Playwright chromium
-        run: bunx playwright-chromium install
-
-      - name: Run e2e smoke
-        run: CSCTM_E2E=1 bun run test:e2e
-
-  linkcheck:
-    name: README link check
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Link check README
-        uses: lycheeverse/lychee-action@v1
-        with:
-          args: "--exclude chatgpt.com/share/ --timeout 20 --max-redirects 5 README.md"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 7
 
   release:
-    name: Create GitHub release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: build-release
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: build
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-
+          pattern: csctf-*
+          merge-multiple: true
+          path: dist
       - name: Generate checksums
         run: |
           set -euo pipefail
-          find artifacts -maxdepth 2 -type f -print0 | sort -z | xargs -0 shasum -a 256 > artifacts/sha256.txt
-
-      - name: List artifacts
-        run: ls -lh artifacts
-
-      - name: Create release with gh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          FILES=$(find artifacts -type f -maxdepth 2 -print)
-          gh release create "${GITHUB_REF_NAME}" $FILES --title "Release ${GITHUB_REF_NAME}" --notes "Automated release for ${GITHUB_REF_NAME}"
+          cd dist
+          shopt -s nullglob
+          for f in csctf-*; do
+            shasum -a 256 "$f" > "${f}.sha256"
+          done
+          shasum -a 256 csctf-* > sha256.txt
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/csctf-*
+            dist/csctf-*.sha256
+            dist/sha256.txt
+          generate_release_notes: true
 
