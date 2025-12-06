@@ -66,6 +66,44 @@ type ScrapedMessage = {
   html: string
 }
 
+type ClaudeSnapshotMessage = {
+  sender: 'human' | 'assistant' | string
+  content: {
+    type: 'text'
+    text: string
+  }[]
+}
+
+type ClaudeSnapshot = {
+  snapshot_name?: string
+  chat_messages?: ClaudeSnapshotMessage[]
+}
+
+async function renderFromClaudeSnapshot(
+  snapshot: ClaudeSnapshot,
+  td: TurndownService
+): Promise<{ title: string; markdown: string; retrievedAt: string } | null> {
+  const messages = snapshot.chat_messages ?? []
+  if (!messages.length) return null
+  const title = snapshot.snapshot_name?.trim() || 'Claude Snapshot'
+  const retrievedAt = new Date().toISOString()
+  const lines: string[] = []
+  lines.push(`# Claude Conversation: ${title}`)
+  lines.push('')
+  lines.push(`Retrieved: ${retrievedAt}`)
+  lines.push('')
+  for (const msg of messages) {
+    const role = msg.sender === 'assistant' ? 'Assistant' : 'User'
+    const text = (msg.content ?? []).map(part => part.text ?? '').join('\n').trim()
+    if (!text) continue
+    lines.push(`## ${role}`)
+    lines.push('')
+    lines.push(td.turndown(text))
+    lines.push('')
+  }
+  return { title, markdown: normalizeLineTerminators(lines.join('\n')), retrievedAt }
+}
+
 type CliOptions = {
   timeoutMs: number
   outfile?: string
@@ -173,83 +211,14 @@ function ensureGhAvailable(autoInstall: boolean): void {
   }
 }
 
-async function resolveGitHubToken(): Promise<string> {
-  const envToken = process.env.GITHUB_TOKEN?.trim()
-  if (envToken) return envToken
-  if (!process.stdin.isTTY) {
-    throw new Error('GITHUB_TOKEN is required for publishing (non-interactive). Set env var or run interactively.')
+function ensureGhAuth(): void {
+  if (!isGhCliAvailable()) {
+    throw new Error('GitHub CLI (gh) is required for publishing. Install via gh install / brew install gh / winget install GitHub.cli.')
   }
-  console.log(
-    chalk.yellow(
-      'No GITHUB_TOKEN found. Paste a token with repo write access (classic repo scope or fine-grained contents:write). Input will not echo.'
-    )
-  )
-
-  const readSecret = async (): Promise<string> => {
-    return await new Promise((resolve, reject) => {
-      const chunks: string[] = []
-      const onData = (b: Buffer) => {
-        const ch = b.toString('utf8')
-        if (ch === '\u0003') {
-          cleanup()
-          reject(new Error('Cancelled'))
-          return
-        }
-        if (ch === '\r' || ch === '\n') {
-          cleanup()
-          process.stdout.write('\n')
-          resolve(chunks.join(''))
-          return
-        }
-        if (ch === '\u0008' || ch === '\u007f') {
-          // backspace
-          chunks.pop()
-          return
-        }
-        chunks.push(ch)
-      }
-      const cleanup = () => {
-        process.stdin.off('data', onData)
-        try {
-          process.stdin.setRawMode?.(false)
-        } catch {
-          /* ignore */
-        }
-      }
-      try {
-        process.stdin.setRawMode?.(true)
-      } catch {
-        /* ignore */
-      }
-      process.stdin.on('data', onData)
-      process.stdout.write('GITHUB_TOKEN: ')
-    })
+  const authStatus = spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' })
+  if (authStatus.status !== 0) {
+    throw new Error('gh CLI is not authenticated. Run "gh auth login" first.')
   }
-
-  let token = ''
-  try {
-    token = await readSecret()
-  } finally {
-    try {
-      process.stdin.setRawMode?.(false)
-    } catch {
-      /* ignore */
-    }
-  }
-  const trimmed = token.trim()
-  if (!trimmed) throw new Error('Empty token provided.')
-  const looksLikePat = /^gh[pous]_[A-Za-z0-9_]{20,}|^github_pat_[A-Za-z0-9_]{20,}/.test(trimmed)
-  if (!looksLikePat && !process.env.CSCTF_ALLOW_NONSTANDARD_TOKEN) {
-    throw new Error('GITHUB_TOKEN does not look like a GitHub PAT (set CSCTF_ALLOW_NONSTANDARD_TOKEN=1 to override).')
-  }
-  // best-effort zeroization of the mutable buffer
-  if (token.length) {
-    const filler = 'x'
-    let obfuscated = ''
-    for (let i = 0; i < token.length; i += 1) obfuscated += filler
-    token = obfuscated
-  }
-  return trimmed
 }
 
 function loadConfig(): AppConfig {
@@ -1270,8 +1239,7 @@ export async function publishToGhPages(opts: PublishOpts): Promise<AppConfig> {
       cleanupTmp()
     }
   }
-  const token = await resolveGitHubToken()
-
+  ensureGhAuth()
   const { repo: repoName, url } = resolveRepoUrl(repo)
   const cleanUrl = url.replace(/https:\/\/[^@]+@/, 'https://')
   tmp = fs.mkdtempSync(path.join(fs.realpathSync(osTmpDir()), 'csctf-ghp-'))
@@ -1287,14 +1255,6 @@ export async function publishToGhPages(opts: PublishOpts): Promise<AppConfig> {
       throw new Error(`git ${args.join(' ')} failed with code ${res.status ?? 'unknown'}`)
     }
   }
-
-  // Configure identity for headless/CI
-  safeRun(['config', 'user.email', 'bot@csctf.local'])
-  safeRun(['config', 'user.name', 'csctf'])
-
-  // Use extraHeader for auth to avoid token-in-URL exposure
-  const authHeader = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
-  safeRun(['config', 'http.https://github.com/.extraheader', authHeader])
 
   const logProgress = (msg: string) => {
     if (!quiet) console.log(chalk.gray(`   ${msg}`))
@@ -1352,6 +1312,10 @@ export async function publishToGhPages(opts: PublishOpts): Promise<AppConfig> {
     logProgress(`Switching to branch ${branch}...`)
     safeRun(['checkout', '-B', branch])
   }
+
+  // Configure identity for headless/CI (git credential helper should be provided by gh auth)
+  safeRun(['config', 'user.email', 'bot@csctf.local'])
+  safeRun(['config', 'user.name', 'csctf'])
 
   const targetDir = path.join(tmp, dir)
   fs.mkdirSync(targetDir, { recursive: true })
@@ -1507,6 +1471,26 @@ async function scrape(
     return undefined
   }
   const claudeCookie = provider === 'claude' ? await resolveClaudeCookie() : undefined
+  const maybeFetchClaudeSnapshotViaCDP = async (page: Page, shareUrl: string): Promise<ClaudeSnapshot | null> => {
+    try {
+      const id = shareUrl.replace(/^https?:\/\/claude\.ai\/share\//i, '')
+      const res = await page.evaluate(
+        async snapId => {
+          const resp = await fetch(
+            `https://claude.ai/api/chat_snapshots/${snapId}?rendering_mode=messages&render_all_tools=true`,
+            { credentials: 'include' }
+          )
+          const text = await resp.text()
+          return { ok: resp.ok, status: resp.status, text }
+        },
+        id
+      )
+      if (!res.ok) return null
+      return JSON.parse(res.text) as ClaudeSnapshot
+    } catch {
+      return null
+    }
+  }
 
   const resolveChromiumExecutable = (): string | undefined => {
     const candidates =
@@ -1549,7 +1533,8 @@ async function scrape(
       // Attach to an existing remote-debug Chrome if provided; otherwise launch a temp profile headful Chrome with RD port.
       const existingWs = opts.claudeAttachWs ?? process.env.CSCTF_CLAUDE_WS_URL
       if (existingWs) {
-        cdpBrowser = await chromium.connectOverCDP(existingWs)
+        const wsEndpoint = existingWs.startsWith('http') ? existingWs.replace(/^http/, 'ws') : existingWs
+        cdpBrowser = await chromium.connectOverCDP(wsEndpoint, { timeout: Math.max(30000, timeoutMs) })
         context = cdpBrowser.contexts()[0] ?? (await cdpBrowser.newContext())
         const pages = context.pages()
         page = pages[0] ?? (await context.newPage())
@@ -1563,6 +1548,11 @@ async function scrape(
           locale: 'en-US'
         })
         page = context.pages()[0] ?? (await context.newPage())
+      }
+      const claudeSnapshot = await maybeFetchClaudeSnapshotViaCDP(page, url)
+      if (claudeSnapshot) {
+        const rendered = await renderFromClaudeSnapshot(claudeSnapshot, td)
+        if (rendered) return rendered
       }
       if (claudeCookie) {
         await page.setExtraHTTPHeaders({ cookie: claudeCookie })
