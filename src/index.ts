@@ -1089,7 +1089,19 @@ async function scrape(
       lines.push('')
     const htmlForTd = cleanHtml(msg.html).replace(/<(?:br\s*\/?|\/p|\/div|\/section|\/article)>/gi, '$&\n')
     let markdown = td.turndown(htmlForTd)
-      markdown = markdown.replace(/\n{3,}/g, '\n\n').trim()
+    markdown = markdown
+      // Drop stray artifacts like "Copy code" or bare "text" lines emitted from UI chrome.
+      .split('\n')
+      .filter(line => {
+        const t = line.trim()
+        if (t.toLowerCase() === 'copy code') return false
+        if (t === 'text') return false
+        return true
+      })
+      .join('\n')
+    // Remove inlined badge-like tokens such as "+2GitHub+2"
+    markdown = markdown.replace(/\s*\+\d+[A-Za-z0-9_-]+(?:\+\d+)?/g, '')
+    markdown = markdown.replace(/\n{3,}/g, '\n\n').trim()
       lines.push(markdown)
       lines.push('')
     }
