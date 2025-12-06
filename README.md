@@ -44,6 +44,54 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/chatgpt_shared_co
 - Unique-path resolution: if `<name>.md` exists, auto-bump suffixes; HTML shares the base name.
 - HTML rendering: Markdown-it + highlight.js, heading slug de-dupe to build a TOC, inline CSS tuned for light/dark/print, zero JS.
 
+## 🔍 How it works (end-to-end)
+1) Launch headless Playwright Chromium with a stable UA.  
+2) Navigate twice (`domcontentloaded` then `networkidle`) to tame late-loading assets.  
+3) Wait for `article [data-message-author-role]`; fail fast if absent.  
+4) Extract each role’s inner HTML (assistant/user) as-is.  
+5) Clean pills/metadata, run Turndown with fenced-code rule, normalize whitespace and newlines.  
+6) Emit Markdown to a temp file, rename atomically; render HTML twin with inline CSS/TOC/HLJS.  
+7) If requested, publish: resolve repo/branch/dir, clone (or create via gh), copy files, regenerate `manifest.json` and `index.html`, commit+push.  
+8) Log steps with timing, print saved paths and optional viewer hint.
+
+## 🛡️ Security & privacy (deep dive)
+- Network: only the share URL plus optional update check; publish uses git/gh over HTTPS. No other calls.  
+- Tokens: only `GITHUB_TOKEN`; never stored; confirmation gate unless `--yes`.  
+- HTML output: no JS, inline styles only; removes citation pills and data-start/end attributes; highlight.js used in a static way.  
+- Filesystem: temp+rename write pattern; collision-proof naming; config stored under `~/.config/csctm/config.json` (GH settings/history).
+
+## 🏎️ Performance profile
+- First run: pays Playwright Chromium download; cached thereafter.  
+- Navigation: 60s default timeout, 3-attempt backoff for load and selector waits.  
+- Rendering: single page/context, linear Turndown + Markdown-it pass; suitable for long chats.  
+- I/O: atomic writes; HTML and MD generated in-memory once.
+
+## 🧭 Failure modes & remedies
+- “No messages were found”: link is private or layout changed; ensure it’s a public share, retry with `--timeout-ms 90000`, report the URL.  
+- Timeout or blank page: slow network/CDN; raise `--timeout-ms`, verify connectivity, ensure provider is reachable.  
+- Publish fails (auth): set `GITHUB_TOKEN` with repo write access; verify `--gh-pages-repo owner/name`; run `gh auth status`.  
+- Publish fails (branch/dir): pass `--gh-pages-branch` / `--gh-pages-dir`; use `--remember` to persist.  
+- Filename collisions: expected; tool appends `_2`, `_3`, … instead of clobbering.
+
+## 📚 Recipes (more examples)
+- Quiet CI scrape (MD only):  
+  `csctm <url> --md-only --quiet --outfile /tmp/chat.md`
+- HTML-only for embedding:  
+  `csctm <url> --html-only --outfile site/chat.html`
+- Publish with remembered settings:  
+  `csctm <url> --gh-pages-repo you/repo --remember --yes`
+- Custom browser cache:  
+  `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright csctm <url>`
+- Longer/slower shares:  
+  `csctm <url> --timeout-ms 90000`
+
+## 🛠️ Internals for contributors
+- CLI entry + flow: `src/index.ts` (arg parsing, scrape, render, publish).  
+- Tests: `bun test` (unit), `CSCTM_E2E=1 bun run test:e2e` (full scrape/build/publish assertions).  
+- Build: `bun run build[:target]` emits single-file binaries in `dist/`.  
+- Lint/typecheck: `bun run lint`, `bun run typecheck`.  
+- Installer: `install.sh` prefers release binaries; falls back to Bun build with git+bun.
+
 ## ⚡ Quickstart
 - macOS/Linux:
   ```bash
