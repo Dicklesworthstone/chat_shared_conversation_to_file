@@ -679,16 +679,7 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
         </footer>
       </article>
     </div>
-    <button class="scroll-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Scroll to top">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
-    </button>
   </div>
-  <script>
-    const btn = document.querySelector('.scroll-top');
-    window.addEventListener('scroll', () => {
-      btn.classList.toggle('visible', window.scrollY > 300);
-    });
-  </script>
 </body>
 </html>`
 }
