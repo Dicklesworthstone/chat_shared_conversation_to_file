@@ -1912,11 +1912,10 @@ async function scrape(
     delete navigator.webdriver
 
     // Override permissions API
-    const originalQuery = window.navigator.permissions.query
-    // @ts-expect-error: override permissions
-    window.navigator.permissions.query = (parameters: { name: string }) =>
+    const originalQuery = window.navigator.permissions.query.bind(window.navigator.permissions)
+    window.navigator.permissions.query = (parameters: PermissionDescriptor) =>
       parameters.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
+        ? Promise.resolve({ state: Notification.permission } as PermissionStatus)
         : originalQuery(parameters)
 
     // More realistic navigator properties
@@ -2000,13 +1999,14 @@ async function scrape(
 
     // Canvas fingerprint randomization
     const origGetContext = HTMLCanvasElement.prototype.getContext
-    // @ts-expect-error: override getContext
+    // @ts-expect-error: override getContext with type coercion
     HTMLCanvasElement.prototype.getContext = function (type: string, ...args: unknown[]) {
       const ctx = origGetContext.call(this, type, ...args)
       if (type === '2d' && ctx) {
-        const origGetImageData = ctx.getImageData
-        ctx.getImageData = function (...args: Parameters<typeof origGetImageData>) {
-          const imageData = origGetImageData.apply(this, args)
+        const ctx2d = ctx as CanvasRenderingContext2D
+        const origGetImageData = ctx2d.getImageData.bind(ctx2d)
+        ctx2d.getImageData = function (sx: number, sy: number, sw: number, sh: number, settings?: ImageDataSettings) {
+          const imageData = origGetImageData(sx, sy, sw, sh, settings)
           // Add tiny noise to prevent fingerprinting
           for (let i = 0; i < imageData.data.length; i += 4) {
             imageData.data[i] = Math.max(0, Math.min(255, imageData.data[i] + (Math.random() - 0.5) * 2))
@@ -2027,7 +2027,6 @@ async function scrape(
         return Reflect.apply(target, thisArg, args)
       }
     }
-    // @ts-expect-error: proxy
     WebGLRenderingContext.prototype.getParameter = new Proxy(
       WebGLRenderingContext.prototype.getParameter,
       getParameterProxyHandler
