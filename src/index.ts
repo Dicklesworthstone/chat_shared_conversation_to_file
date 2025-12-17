@@ -2411,6 +2411,10 @@ async function scrape(
             const source = `${attrRole} ${testId} ${className}`
             if (/assistant|bot|system|model|gemini|grok/.test(source)) return 'assistant'
             if (/user|human|you/.test(source)) return 'user'
+            // Check text content for ChatGPT "You said" / "ChatGPT said" patterns (GPT-5.2 Pro ultrathink)
+            const textLower = text.toLowerCase()
+            if (/chatgpt\s+said|^said:/i.test(textLower) || /^assistant/i.test(textLower.trim())) return 'assistant'
+            if (/you\s+said/i.test(textLower) || textLower.trim().startsWith('you said')) return 'user'
             return 'unknown'
           }
           const detected = (attrRole || inferRole()).toLowerCase()
@@ -2430,7 +2434,8 @@ async function scrape(
         .filter((m): m is { role: MessageRole; html: string } => Boolean(m))
     }, selectorGroups)) as ScrapedMessage[]
 
-    if (provider === 'grok' || provider === 'gemini') {
+    // Apply alternating role fallback for unknown messages (conversations typically alternate user/assistant)
+    if (provider === 'grok' || provider === 'gemini' || provider === 'chatgpt') {
       let unknownIdx = 0
       messages = messages.map(m => {
         if (m.role !== 'unknown') return m
@@ -2480,6 +2485,8 @@ async function scrape(
         .filter(line => line.trim() !== 'text')
         .join('\n')
       markdown = markdown.replace(/\n{3,}/g, '\n\n').trim()
+      // Remove ChatGPT "You said:" / "ChatGPT said:" header artifacts from GPT-5.2 Pro ultrathink conversations
+      markdown = markdown.replace(/^#{3,6}\s*(You said|ChatGPT said):?\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim()
       lines.push(markdown)
       lines.push('')
     }
