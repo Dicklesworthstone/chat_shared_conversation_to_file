@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-chromium'
+import puppeteer, { type Browser as PuppeteerBrowser, type Page as PuppeteerPage } from 'puppeteer-core'
 import TurndownService, { type Rule } from 'turndown'
 import fs from 'fs'
 import path from 'path'
@@ -7,15 +8,16 @@ import chalk from 'chalk'
 import MarkdownIt from 'markdown-it'
 import type { Options as MdOptions } from 'markdown-it'
 import hljs from 'highlight.js'
-import { spawnSync } from 'child_process'
+import { spawnSync, spawn } from 'child_process'
 import os from 'os'
 import readline from 'readline'
 import pkg from '../package.json' assert { type: 'json' }
 
-type Provider = 'chatgpt' | 'gemini' | 'grok'
+type Provider = 'chatgpt' | 'gemini' | 'grok' | 'claude'
 const PROVIDER_PATTERNS: { id: Provider; patterns: RegExp[] }[] = [
   { id: 'gemini', patterns: [/gemini\.google\.com$/i] },
   { id: 'grok', patterns: [/grok\.com$/i, /grok\.x\.ai$/i] },
+  { id: 'claude', patterns: [/claude\.ai$/i] },
   { id: 'chatgpt', patterns: [/chatgpt\.com$/i, /openai\.com$/i, /share\.chatgpt\.com$/i] }
 ]
 const PROVIDER_SELECTOR_CANDIDATES: Record<Provider, string[][]> = {
@@ -37,6 +39,17 @@ const PROVIDER_SELECTOR_CANDIDATES: Record<Provider, string[][]> = {
     ['article', 'section', '[role="article"]', 'main article'],
     ['.message-bubble', '.response-content-markdown', '.markdown'],
     ['div[class*="message"]', 'div[class*="chat"]']
+  ],
+  claude: [
+    // Claude.ai share page selectors - confirmed from DOM inspection Dec 2025
+    // User messages: [data-testid="user-message"], Assistant: [data-is-streaming]
+    // Container: div.flex-1.flex.flex-col.px-4.max-w-3xl with gap-3
+    ['[data-testid="user-message"]', '[data-is-streaming]'],
+    ['[data-testid="user-message"]'],
+    ['[data-is-streaming]'],
+    // Fallback patterns
+    ['.max-w-3xl.mx-auto [data-testid]', '.max-w-3xl.mx-auto [data-is-streaming]'],
+    ['div.gap-3 > div > [data-testid="user-message"]', 'div.gap-3 > div [data-is-streaming]']
   ]
 }
 class AppError extends Error {
@@ -85,6 +98,7 @@ type CliOptions = {
   autoInstallGh: boolean
   useChromeProfile: boolean
   stealthMode: boolean
+  cdpEndpoint?: string
 }
 
 type ParsedArgs = CliOptions & { url: string }
@@ -756,6 +770,7 @@ function parseArgs(args: string[]): ParsedArgs {
   let autoInstallGh = false
   let useChromeProfile = false
   let stealthMode = false
+  let cdpEndpoint: string | undefined
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
@@ -786,6 +801,17 @@ function parseArgs(args: string[]): ParsedArgs {
       case '--stealth':
         stealthMode = true
         break
+      case '--cdp': {
+        const next = args[i + 1]
+        // Only consume next arg if it looks like an endpoint (not a flag)
+        if (next && !next.startsWith('-')) {
+          cdpEndpoint = next
+          i += 1
+        } else {
+          cdpEndpoint = 'http://localhost:9222'
+        }
+        break
+      }
       case '--quiet':
         quiet = true
         break
@@ -932,7 +958,8 @@ function parseArgs(args: string[]): ParsedArgs {
     ghPagesDir,
     autoInstallGh,
     useChromeProfile,
-    stealthMode
+    stealthMode,
+    cdpEndpoint
   }
 }
 
@@ -985,9 +1012,9 @@ const DONE = (quiet: boolean) => (msg: string, elapsedMs?: number) => {
 function usage(): void {
   console.log(
     [
-      `Usage: csctf <chatgpt|gemini|grok-share-url>`,
+      `Usage: csctf <chatgpt|gemini|grok|claude-share-url>`,
       `  [--timeout-ms 60000] [--outfile path|--output-dir dir] [--quiet] [--verbose] [--format both|md|html]`,
-      `  [--headful|--headless] [--stealth] [--use-chrome-profile]`,
+      `  [--headful|--headless] [--stealth] [--use-chrome-profile] [--cdp <endpoint>]`,
       `  [--open] [--copy] [--json] [--title "Custom Title"] [--wait-for-selector "<css>"] [--debug]`,
       `  [--check-updates|--no-check-updates] [--version] [--no-html] [--html-only] [--md-only]`,
       `  [--publish-to-gh-pages] [--gh-pages-repo owner/name] [--gh-pages-branch gh-pages] [--gh-pages-dir dir]`,
@@ -997,12 +1024,18 @@ function usage(): void {
       `  Basic scrape (ChatGPT):   csctf https://chatgpt.com/share/<id>`,
       `  Basic scrape (Gemini):    csctf https://gemini.google.com/share/<id>`,
       `  Basic scrape (Grok):      csctf https://grok.com/share/<id>`,
+      `  Basic scrape (Claude):    csctf https://claude.ai/share/<id> --cdp http://localhost:9222`,
       `  HTML only:                csctf <url> --html-only`,
       `  Markdown only:            csctf <url> --md-only`,
       `  Longer timeout:           csctf <url> --timeout-ms 90000`,
       `  Publish (simple):         csctf <url> --publish-to-gh-pages --yes`,
       `  Publish (custom repo):    csctf <url> --gh-pages-repo owner/name --yes`,
       `  Remember GH settings:     csctf <url> --publish-to-gh-pages --remember --yes`,
+      '',
+      'CDP mode (for sites with strong bot detection like Claude.ai):',
+      `  1. Start Chrome with: /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222`,
+      `  2. Navigate to the share URL manually in Chrome`,
+      `  3. Run: csctf <url> --cdp http://localhost:9222`,
       ''
     ].join('\n')
   )
@@ -1846,11 +1879,14 @@ async function scrape(
     headless: boolean
     useChromeProfile?: boolean
     stealthMode?: boolean
+    cdpEndpoint?: string
+    quiet?: boolean
   }
 ): Promise<{ title: string; markdown: string; retrievedAt: string }> {
   const td = buildTurndown()
   let browser: Browser | null = null
   let page!: Page
+  let currentHeadless = opts.headless
   const resolveChromiumExecutable = (): string | undefined => {
     const candidates =
       process.platform === 'darwin'
@@ -2031,6 +2067,192 @@ async function scrape(
       WebGLRenderingContext.prototype.getParameter,
       getParameterProxyHandler
     )
+
+    // ===== HEADLESS DETECTION EVASION =====
+
+    // Fix window.outerHeight/outerWidth (0 in headless mode - major detection vector)
+    const viewportWidth = 1366
+    const viewportHeight = 768
+    Object.defineProperty(window, 'outerWidth', { get: () => viewportWidth })
+    Object.defineProperty(window, 'outerHeight', { get: () => viewportHeight + 85 }) // Chrome window chrome height
+    Object.defineProperty(window, 'innerWidth', { get: () => viewportWidth })
+    Object.defineProperty(window, 'innerHeight', { get: () => viewportHeight })
+    Object.defineProperty(window, 'screenX', { get: () => 0 })
+    Object.defineProperty(window, 'screenY', { get: () => 25 }) // macOS menu bar offset
+
+    // Fix screen properties
+    Object.defineProperty(screen, 'availWidth', { get: () => 1920 })
+    Object.defineProperty(screen, 'availHeight', { get: () => 1055 }) // 1080 - dock/taskbar
+    Object.defineProperty(screen, 'width', { get: () => 1920 })
+    Object.defineProperty(screen, 'height', { get: () => 1080 })
+    Object.defineProperty(screen, 'colorDepth', { get: () => 24 })
+    Object.defineProperty(screen, 'pixelDepth', { get: () => 24 })
+
+    // Fix devicePixelRatio (sometimes wrong in headless)
+    Object.defineProperty(window, 'devicePixelRatio', { get: () => 2 }) // Retina display
+
+    // Add navigator.connection (missing in some headless configurations)
+    if (!(navigator as { connection?: unknown }).connection) {
+      Object.defineProperty(navigator, 'connection', {
+        get: () => ({
+          downlink: 10,
+          effectiveType: '4g',
+          rtt: 50,
+          saveData: false,
+          onchange: null
+        })
+      })
+    }
+
+    // Fix document.hasFocus() (returns false in headless)
+    document.hasFocus = () => true
+
+    // Override matchMedia to hide headless indicators
+    const origMatchMedia = window.matchMedia.bind(window)
+    window.matchMedia = (query: string) => {
+      // Some sites check for specific media queries to detect headless
+      if (query === '(prefers-reduced-motion: reduce)') {
+        return { matches: false, media: query, onchange: null, addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true } as MediaQueryList
+      }
+      return origMatchMedia(query)
+    }
+
+    // Hide automation-related errors in stack traces
+    const ErrorWithStackTrace = Error as typeof Error & { prepareStackTrace?: unknown }
+    const origPrepareStackTrace = ErrorWithStackTrace.prepareStackTrace
+    ErrorWithStackTrace.prepareStackTrace = function (err: Error, stack: NodeJS.CallSite[]) {
+      // Filter out any Playwright/Puppeteer related frames
+      const filteredStack = stack.filter(frame => {
+        const fileName = frame.getFileName() || ''
+        return !fileName.includes('pptr:') && !fileName.includes('__puppeteer') && !fileName.includes('playwright')
+      })
+      if (origPrepareStackTrace) {
+        return origPrepareStackTrace(err, filteredStack)
+      }
+      return filteredStack.map(frame => `    at ${frame}`).join('\n')
+    }
+
+    // Add Notification.permission if not present
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      // Keep default, but make sure the API exists properly
+    }
+
+    // Prevent detection via missing window.Notification
+    if (typeof Notification === 'undefined') {
+      const win = window as typeof window & { Notification: unknown }
+      const notifShim = function () {} as unknown as typeof Notification
+      win.Notification = notifShim
+      ;(notifShim as unknown as { permission: string }).permission = 'default'
+      ;(notifShim as unknown as { requestPermission: () => Promise<string> }).requestPermission = () => Promise.resolve('default')
+    }
+
+    // Fix potential issues with performance.memory (Chrome-specific, may reveal headless)
+    const perfWithMemory = performance as Performance & { memory?: unknown }
+    if (perfWithMemory.memory) {
+      Object.defineProperty(performance, 'memory', {
+        get: () => ({
+          jsHeapSizeLimit: 2172649472,
+          totalJSHeapSize: 19356000 + Math.floor(Math.random() * 1000000),
+          usedJSHeapSize: 16456000 + Math.floor(Math.random() * 1000000)
+        })
+      })
+    }
+
+    // Override PerformanceObserver to prevent timing-based detection
+    const origPerformanceObserver = window.PerformanceObserver
+    ;(window as { PerformanceObserver: typeof PerformanceObserver }).PerformanceObserver = class extends origPerformanceObserver {
+      constructor(callback: PerformanceObserverCallback) {
+        super((list, observer) => {
+          // Filter out any entries that might reveal automation
+          callback(list, observer)
+        })
+      }
+    }
+
+    // ===== CLOUDFLARE-SPECIFIC ANTI-DETECTION =====
+
+    // Remove CDP-related variables that Cloudflare checks for
+    // Chrome DevTools Protocol adds variables like $cdc_asdjflasutopfhvcZLmcfl_
+    const deleteAutomationVars = () => {
+      const globalObj = window as unknown as Record<string, unknown>
+      for (const prop of Object.keys(globalObj)) {
+        if (prop.startsWith('cdc_') || prop.startsWith('$cdc_') || prop.includes('webdriver') || prop.includes('selenium') || prop.includes('driver')) {
+          try {
+            delete globalObj[prop]
+          } catch {
+            // Some properties can't be deleted
+          }
+        }
+      }
+    }
+    deleteAutomationVars()
+    // Periodically clean up in case CDP adds them later
+    setInterval(deleteAutomationVars, 500)
+
+    // Override document.hidden to always return false (focused browser)
+    Object.defineProperty(document, 'hidden', { get: () => false })
+    Object.defineProperty(document, 'visibilityState', { get: () => 'visible' })
+
+    // Ensure document has focus events working
+    const focusEvent = new FocusEvent('focus', { bubbles: true })
+    document.dispatchEvent(focusEvent)
+
+    // Override iframe contentWindow to prevent Turnstile iframe detection
+    const origIframeDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow')
+    if (origIframeDesc?.get) {
+      const origGetter = origIframeDesc.get
+      Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+        get: function () {
+          const win = origGetter.call(this)
+          if (win) {
+            try {
+              // Make the iframe appear to have proper parent reference
+              Object.defineProperty(win, 'parent', { value: window })
+              Object.defineProperty(win, 'top', { value: window })
+            } catch {
+              // Cross-origin iframes will throw
+            }
+          }
+          return win
+        }
+      })
+    }
+
+    // Fix navigator.getBattery (returns empty promise in some headless configs)
+    if (!('getBattery' in navigator)) {
+      Object.defineProperty(navigator, 'getBattery', {
+        value: () => Promise.resolve({
+          charging: true,
+          chargingTime: 0,
+          dischargingTime: Infinity,
+          level: 1,
+          onchargingchange: null,
+          onchargingtimechange: null,
+          ondischargingtimechange: null,
+          onlevelchange: null
+        })
+      })
+    }
+
+    // Override AudioContext to prevent audio fingerprinting detection
+    const OriginalAudioContext = window.AudioContext || (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (OriginalAudioContext) {
+      const audioContextProto = OriginalAudioContext.prototype
+      const origCreateOscillator = audioContextProto.createOscillator
+      audioContextProto.createOscillator = function () {
+        const osc = origCreateOscillator.call(this)
+        // Add tiny random variation to prevent fingerprinting
+        const origConnect = osc.connect.bind(osc) as OscillatorNode['connect']
+        osc.connect = origConnect
+        return osc
+      }
+    }
+
+    // Spoof timezone if needed (some sites check for inconsistencies)
+    const origDateTimeFormat = Intl.DateTimeFormat
+    ;(Intl as { DateTimeFormat: typeof origDateTimeFormat }).DateTimeFormat = function (locales?: string | string[], options?: Intl.DateTimeFormatOptions) {
+      return new origDateTimeFormat(locales, { ...options, timeZone: options?.timeZone || 'America/New_York' })
+    } as typeof origDateTimeFormat
   }
 
   // Current Chrome UA (Dec 2024)
@@ -2052,6 +2274,7 @@ async function scrape(
 
   // Launch browser with stealth settings
   const launchBrowser = async (headless: boolean, useProfile: boolean) => {
+    // Base args for anti-detection
     const launchArgs = [
       '--disable-blink-features=AutomationControlled',
       '--disable-features=IsolateOrigins,site-per-process',
@@ -2062,8 +2285,26 @@ async function scrape(
       '--disable-infobars',
       '--window-size=1366,768',
       '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding'
+      '--disable-renderer-backgrounding',
+      // Additional anti-detection args
+      '--disable-extensions',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-default-apps',
+      '--disable-breakpad',
+      '--disable-component-update',
+      '--disable-domain-reliability',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--no-pings'
     ]
+
+    // For headless mode, use Chrome's new headless mode (--headless=new)
+    // which is much harder to detect than the old headless mode
+    // We pass headless=false to Playwright and manually add --headless=new
+    const useNewHeadless = headless && resolveChromiumExecutable() !== undefined
+    if (useNewHeadless) {
+      launchArgs.push('--headless=new')
+    }
 
     // When using profile, we need to launch with persistent context
     if (useProfile) {
@@ -2095,7 +2336,7 @@ async function scrape(
           }
         }
         return chromium.launchPersistentContext(tempProfile, {
-          headless,
+          headless: useNewHeadless ? false : headless, // Use false when using --headless=new
           executablePath: resolveChromiumExecutable(),
           args: launchArgs,
           userAgent,
@@ -2107,7 +2348,7 @@ async function scrape(
 
     // Standard launch without profile
     const b = await chromium.launch({
-      headless,
+      headless: useNewHeadless ? false : headless, // Use false when using --headless=new
       executablePath: resolveChromiumExecutable(),
       args: launchArgs,
       ignoreDefaultArgs: ['--enable-automation']
@@ -2116,13 +2357,482 @@ async function scrape(
   }
 
   try {
-    // Try with stealth settings first
-    const useProfile = opts.useChromeProfile ?? false
-    const useStealth = opts.stealthMode ?? true // Enable stealth by default now
-    let currentHeadless = opts.headless
-    let context: BrowserContext | null = null
+    // Auto-CDP mode: Claude.ai has Cloudflare protection too strong for automation
+    // Automatically launch real Chrome and let user solve challenges
+    const needsCdp = opts.cdpEndpoint !== undefined || provider === 'claude'
 
-    const result = await launchBrowser(currentHeadless, useProfile)
+    if (needsCdp) {
+      const endpoint = opts.cdpEndpoint || 'http://localhost:9222'
+
+      // Track whether we launched Chrome with temp profile (for restoration later)
+      let launchedWithTempProfile = false
+      let tempProfileDir = ''
+
+      // Detect which Chrome variant is installed/running (prefer Canary, then regular Chrome)
+      const chromePaths = [
+        '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+      ]
+      const chromeApps = [
+        { process: 'Google Chrome Canary', app: 'Google Chrome Canary', path: chromePaths[0] },
+        { process: 'Google Chrome', app: 'Google Chrome', path: chromePaths[1] }
+      ]
+
+      // Find which Chrome is running or use the first available
+      let activeChrome = chromeApps.find(c => {
+        const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
+        return check.status === 0
+      })
+
+      // If none running, find first installed
+      if (!activeChrome) {
+        activeChrome = chromeApps.find(c => fs.existsSync(c.path)) || chromeApps[1]
+      }
+
+      const chromePath = resolveChromiumExecutable() || activeChrome.path
+      const chromeAppName = activeChrome.app
+
+      // Try to connect to existing Chrome with debugging using puppeteer-core (bun compatible)
+      let puppeteerBrowser: PuppeteerBrowser | null = null
+      let connected = false
+      try {
+        if (!opts.quiet) console.error(chalk.blue(`[1/8] Connecting to Chrome...`))
+        puppeteerBrowser = await puppeteer.connect({
+          browserURL: endpoint,
+          defaultViewport: null
+        })
+        connected = true
+        if (!opts.quiet) console.error(chalk.gray('    Connected to existing Chrome instance'))
+      } catch (connectErr) {
+        // Log the actual error for debugging
+        console.error(chalk.gray(`    CDP connection failed: ${connectErr instanceof Error ? connectErr.message : String(connectErr)}`))
+        // Chrome not running with debugging - check if any Chrome variant is running
+        const chromeAlreadyRunning = chromeApps.some(c => {
+          const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
+          return check.status === 0
+        })
+
+        if (chromeAlreadyRunning && process.platform === 'darwin') {
+          // Save all open Chrome tabs before restarting
+          let savedTabs: string[] = []
+          const saveTabsScript = `
+            tell application "${chromeAppName}"
+              set tabList to {}
+              repeat with w in windows
+                repeat with t in tabs of w
+                  set end of tabList to URL of t
+                end repeat
+              end repeat
+              return tabList
+            end tell
+          `
+          const result = spawnSync('osascript', ['-e', saveTabsScript], { encoding: 'utf-8' })
+          if (result.stdout) {
+            savedTabs = result.stdout.trim().split(', ').filter(u => u && u !== 'missing value')
+          }
+
+          // Offer to automatically restart Chrome
+          console.error(chalk.yellow('\n⚠️  Chrome needs to restart with remote debugging enabled.'))
+          if (savedTabs.length > 0) {
+            console.error(chalk.gray(`    Your ${savedTabs.length} open tab(s) will be saved and restored automatically.\n`))
+          }
+          console.error(chalk.white('    Press Enter to restart Chrome, or Ctrl+C to cancel...'))
+
+          const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+          await new Promise<void>(resolve => rl.question('', () => { rl.close(); resolve() }))
+
+          // Save tabs to temp file for restoration (include app name)
+          if (savedTabs.length > 0) {
+            const tabsFile = path.join(os.tmpdir(), 'csctf-chrome-tabs.json')
+            fs.writeFileSync(tabsFile, JSON.stringify({ app: chromeAppName, tabs: savedTabs }, null, 2))
+          }
+
+          // Gracefully quit Chrome using AppleScript
+          console.error(chalk.gray('    Closing Chrome...'))
+          spawnSync('osascript', ['-e', `tell application "${chromeAppName}" to quit`], { encoding: 'utf-8' })
+
+          // Wait for Chrome to fully close
+          for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 500))
+            const stillRunning = chromeApps.some(c => {
+              const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
+              return check.status === 0
+            })
+            if (!stillRunning) break
+          }
+
+          // Force kill any remaining Chrome processes (background helpers, etc.)
+          spawnSync('pkill', ['-9', '-f', 'Google Chrome'], { encoding: 'utf-8' })
+          await new Promise(r => setTimeout(r, 1000))
+
+          // Final verification - check for main Chrome processes only
+          const stillRunning = chromeApps.some(c => {
+            const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
+            return check.status === 0
+          })
+          if (stillRunning) {
+            throw new AppError(
+              'Chrome is still running.',
+              'Please close Chrome manually and try again.'
+            )
+          }
+        } else if (chromeAlreadyRunning) {
+          // Non-macOS: ask user to close manually
+          console.error(chalk.yellow('\n⚠️  Chrome is running but without remote debugging enabled.'))
+          console.error(chalk.yellow('    Please close ALL Chrome windows, then press Enter to continue...\n'))
+
+          const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+          await new Promise<void>(resolve => rl.question('', () => { rl.close(); resolve() }))
+
+          await new Promise(r => setTimeout(r, 1000))
+          const stillRunning = chromeApps.some(c => {
+            const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
+            return check.status === 0
+          })
+          if (stillRunning) {
+            throw new AppError('Chrome is still running.', 'Please close all Chrome windows and try again.')
+          }
+        }
+
+        // Now launch Chrome with debugging
+        if (!opts.quiet) console.error(chalk.blue(`[1/8] Launching Chrome with remote debugging...`))
+
+        // Chrome requires a non-default user-data-dir for remote debugging
+        // Copy the user's cookies to a temp profile to preserve their session
+        tempProfileDir = path.join(os.tmpdir(), 'csctf-chrome-debug')
+        const tempDefaultDir = path.join(tempProfileDir, 'Default')
+
+        // Find user's Chrome profile directory
+        let userProfileDir: string | null = null
+        if (process.platform === 'darwin') {
+          const chromeProfilePaths = [
+            path.join(os.homedir(), 'Library/Application Support/Google/Chrome/Default'),
+            path.join(os.homedir(), 'Library/Application Support/Google/Chrome Canary/Default')
+          ]
+          userProfileDir = chromeProfilePaths.find(p => fs.existsSync(path.join(p, 'Cookies'))) || null
+        } else if (process.platform === 'win32') {
+          const localAppData = process.env.LOCALAPPDATA || ''
+          userProfileDir = path.join(localAppData, 'Google/Chrome/User Data/Default')
+        } else {
+          userProfileDir = path.join(os.homedir(), '.config/google-chrome/Default')
+        }
+
+        // Create temp profile with copied cookies
+        if (!fs.existsSync(tempDefaultDir)) {
+          fs.mkdirSync(tempDefaultDir, { recursive: true })
+        }
+
+        if (userProfileDir && fs.existsSync(userProfileDir)) {
+          // Copy essential session files (cookies, login data, local storage)
+          const filesToCopy = ['Cookies', 'Login Data', 'Web Data']
+          for (const file of filesToCopy) {
+            const src = path.join(userProfileDir, file)
+            const dest = path.join(tempDefaultDir, file)
+            if (fs.existsSync(src)) {
+              try {
+                fs.copyFileSync(src, dest)
+              } catch {
+                // Some files may be locked, that's ok
+              }
+            }
+          }
+          // Copy Sessions folder if it exists
+          const sessionsDir = path.join(userProfileDir, 'Sessions')
+          const destSessionsDir = path.join(tempDefaultDir, 'Sessions')
+          if (fs.existsSync(sessionsDir)) {
+            try {
+              if (!fs.existsSync(destSessionsDir)) fs.mkdirSync(destSessionsDir)
+              for (const f of fs.readdirSync(sessionsDir)) {
+                fs.copyFileSync(path.join(sessionsDir, f), path.join(destSessionsDir, f))
+              }
+            } catch {
+              // Ignore copy errors
+            }
+          }
+          if (!opts.quiet) console.error(chalk.gray('    Copied session cookies to temp profile'))
+        }
+
+        // Launch Chrome with temp profile that has debugging enabled
+        const child = spawn(chromePath, [
+          '--remote-debugging-port=9222',
+          '--user-data-dir=' + tempProfileDir,
+          '--no-first-run',
+          '--no-default-browser-check',
+          url
+        ], {
+          detached: true,
+          stdio: 'ignore'
+        })
+        child.unref()
+        launchedWithTempProfile = true
+
+        if (!child.pid) {
+          throw new AppError(
+            `Could not launch Chrome.`,
+            `Ensure Chrome is installed at: ${chromePath}`
+          )
+        }
+
+        // Wait for Chrome to start and become available
+        if (!opts.quiet) console.error(chalk.gray('    Waiting for Chrome to start...'))
+        for (let attempt = 0; attempt < 15; attempt++) {
+          await new Promise(r => setTimeout(r, 1000))
+          try {
+            puppeteerBrowser = await puppeteer.connect({
+              browserURL: endpoint,
+              defaultViewport: null
+            })
+            connected = true
+            if (!opts.quiet) console.error(chalk.gray('    Chrome ready'))
+            break
+          } catch {
+            // Keep trying
+          }
+        }
+      }
+
+      if (!connected || !puppeteerBrowser) {
+        throw new AppError(
+          `Could not connect to Chrome.`,
+          `Close all Chrome windows and try again. The tool needs to launch Chrome with special debugging enabled.`
+        )
+      }
+
+      // Find the page with our share URL using puppeteer
+      await new Promise(r => setTimeout(r, 2000)) // Let Chrome load
+      let puppeteerPages = await puppeteerBrowser.pages()
+      const shareId = url.split('/').pop() || ''
+      let puppeteerPage: PuppeteerPage | undefined = puppeteerPages.find(p => p.url().includes(shareId)) || puppeteerPages[0]
+
+      if (!puppeteerPage) {
+        puppeteerPage = await puppeteerBrowser.newPage()
+        await puppeteerPage.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
+      }
+
+      if (!opts.quiet) console.error(chalk.blue('[2/8] Waiting for page to load...'))
+      await puppeteerPage.waitForNetworkIdle({ timeout: 10000 }).catch(() => {})
+
+      // Check for Cloudflare challenge
+      const checkForChallengePuppeteer = async (): Promise<boolean> => {
+        const content = await puppeteerPage!.evaluate(() => document.body?.textContent || '').catch(() => '')
+        const title = await puppeteerPage!.title().catch(() => '')
+        return /verify you are human|just a moment|checking your browser|ray id:/i.test(content) ||
+               /just a moment|cloudflare/i.test(title)
+      }
+
+      if (await checkForChallengePuppeteer()) {
+        console.error(chalk.yellow('\n⚠️  Cloudflare verification detected in Chrome.'))
+        console.error(chalk.yellow('    Please complete the verification in Chrome, then press Enter...\n'))
+
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+        await new Promise<void>(resolve => rl.question('', () => { rl.close(); resolve() }))
+
+        // Re-find the page after user interaction
+        await new Promise(r => setTimeout(r, 1000))
+        puppeteerPages = await puppeteerBrowser.pages()
+        puppeteerPage = puppeteerPages.find(p => p.url().includes(shareId)) || puppeteerPages[0]
+        if (!puppeteerPage) throw new AppError('Lost connection to page after verification.')
+        await puppeteerPage.waitForNetworkIdle({ timeout: 5000 }).catch(() => {})
+
+        // Verify challenge is now cleared
+        if (await checkForChallengePuppeteer()) {
+          throw new AppError('Cloudflare challenge still present.', 'Please try again.')
+        }
+      }
+
+      if (!opts.quiet) console.error(chalk.blue('[3/8] Extracting conversation...'))
+
+      // CDP mode: Extract content directly using puppeteer and return early
+      // Claude.ai selectors
+      const claudeSelectors = [
+        '[data-testid="user-message"]',
+        '[data-is-streaming]',
+        '.prose',
+        '[class*="message"]'
+      ]
+
+      // Wait for content
+      let hasContent = false
+      for (const selector of claudeSelectors) {
+        try {
+          await puppeteerPage.waitForSelector(selector, { timeout: 5000 })
+          hasContent = true
+          break
+        } catch {
+          // Try next selector
+        }
+      }
+
+      if (!hasContent) {
+        throw new AppError(
+          'Could not find conversation content on Claude.ai.',
+          'The page may still be loading or the share link may be invalid.'
+        )
+      }
+
+      // Extract messages using puppeteer
+      const messages = await puppeteerPage.evaluate(() => {
+        const results: { role: string; content: string }[] = []
+
+        // Try to find user and assistant messages
+        const userMsgs = document.querySelectorAll('[data-testid="user-message"]')
+        const assistantMsgs = document.querySelectorAll('[data-is-streaming], .prose')
+
+        // If specific selectors don't work, try generic message containers
+        if (userMsgs.length === 0 && assistantMsgs.length === 0) {
+          const allMsgs = document.querySelectorAll('[class*="message"]')
+          allMsgs.forEach(el => {
+            const text = el.textContent?.trim() || ''
+            if (text) {
+              results.push({ role: 'unknown', content: el.innerHTML })
+            }
+          })
+        } else {
+          userMsgs.forEach(el => {
+            results.push({ role: 'user', content: el.innerHTML })
+          })
+          assistantMsgs.forEach(el => {
+            results.push({ role: 'assistant', content: el.innerHTML })
+          })
+        }
+
+        return results
+      })
+
+      // Get page title
+      const pageTitle = await puppeteerPage.title() || 'Claude Conversation'
+
+      // Close puppeteer browser
+      await puppeteerBrowser.disconnect()
+
+      // Restore Chrome to normal state if we launched with temp profile
+      if (launchedWithTempProfile && process.platform === 'darwin') {
+        if (!opts.quiet) console.error(chalk.blue('[7/8] Restoring Chrome to normal...'))
+
+        // Close Chrome (running on temp profile)
+        spawnSync('osascript', ['-e', `tell application "${chromeAppName}" to quit`], { encoding: 'utf-8' })
+
+        // Wait for Chrome to fully close
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 500))
+          const stillRunning = chromeApps.some(c => {
+            const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
+            return check.status === 0
+          })
+          if (!stillRunning) break
+        }
+
+        // Force kill any remaining Chrome processes
+        spawnSync('pkill', ['-9', '-f', 'Google Chrome'], { encoding: 'utf-8' })
+        await new Promise(r => setTimeout(r, 500))
+
+        // Clean up temp profile directory
+        if (tempProfileDir) {
+          try {
+            fs.rmSync(tempProfileDir, { recursive: true, force: true })
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+
+        // Check if we have tabs to restore
+        const tabsFile = path.join(os.tmpdir(), 'csctf-chrome-tabs.json')
+        let savedTabsData: { app: string; tabs: string[] } | null = null
+        if (fs.existsSync(tabsFile)) {
+          try {
+            savedTabsData = JSON.parse(fs.readFileSync(tabsFile, 'utf-8'))
+          } catch {
+            // Ignore parse errors
+          }
+        }
+
+        if (savedTabsData && savedTabsData.tabs.length > 0) {
+          if (!opts.quiet) console.error(chalk.blue('[8/8] Restoring your tabs...'))
+
+          // Relaunch Chrome with default profile and first tab
+          spawn(chromePath, [savedTabsData.tabs[0]], {
+            detached: true,
+            stdio: 'ignore'
+          }).unref()
+
+          // Wait for Chrome to start
+          await new Promise(r => setTimeout(r, 2000))
+
+          // Open remaining tabs via AppleScript
+          if (savedTabsData.tabs.length > 1) {
+            const remainingTabs = savedTabsData.tabs.slice(1)
+            for (const tabUrl of remainingTabs) {
+              // Use AppleScript to open each tab in a new tab (not new window)
+              const openTabScript = `
+                tell application "${savedTabsData.app}"
+                  activate
+                  tell front window
+                    make new tab with properties {URL:"${tabUrl}"}
+                  end tell
+                end tell
+              `
+              spawnSync('osascript', ['-e', openTabScript], { encoding: 'utf-8' })
+              await new Promise(r => setTimeout(r, 100)) // Small delay between tabs
+            }
+          }
+
+          if (!opts.quiet) console.error(chalk.green(`    ✔ Restored ${savedTabsData.tabs.length} tab(s)`))
+
+          // Clean up tabs file
+          try {
+            fs.unlinkSync(tabsFile)
+          } catch {
+            // Ignore cleanup errors
+          }
+        } else {
+          // No tabs to restore, just relaunch Chrome normally
+          if (!opts.quiet) console.error(chalk.gray('    Chrome closed (no tabs to restore)'))
+        }
+      } else if (launchedWithTempProfile) {
+        // Non-macOS: just close Chrome, can't restore tabs automatically
+        if (!opts.quiet) console.error(chalk.blue('[7/8] Closing temporary Chrome session...'))
+        spawnSync('pkill', ['-f', 'remote-debugging-port=9222'], { encoding: 'utf-8' })
+        await new Promise(r => setTimeout(r, 500))
+
+        // Clean up temp profile
+        if (tempProfileDir) {
+          try {
+            fs.rmSync(tempProfileDir, { recursive: true, force: true })
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+        if (!opts.quiet) console.error(chalk.gray('    Temporary session closed'))
+      }
+
+      // Convert to markdown using turndown
+      const lines: string[] = [
+        `# Conversation: ${pageTitle}`,
+        '',
+        `> Source: ${url}`,
+        `> Retrieved: ${new Date().toLocaleString()}`,
+        ''
+      ]
+
+      for (const msg of messages) {
+        const roleLabel = msg.role === 'user' ? 'User' : msg.role === 'assistant' ? 'Assistant' : 'Message'
+        lines.push(`## ${roleLabel}`, '')
+        lines.push(td.turndown(msg.content))
+        lines.push('')
+      }
+
+      return {
+        title: pageTitle.replace(/\s*[-|].*$/, '').trim() || 'Claude Conversation',
+        markdown: normalizeLineTerminators(lines.join('\n')),
+        retrievedAt: new Date().toISOString()
+      }
+    } else {
+      // Standard launch mode
+      const useProfile = opts.useChromeProfile ?? false
+      const useStealth = opts.stealthMode ?? true // Enable stealth by default now
+      let context: BrowserContext | null = null
+
+      const result = await launchBrowser(currentHeadless, useProfile)
     if ('newPage' in result && typeof result.newPage === 'function') {
       // It's a BrowserContext from launchPersistentContext
       context = result as BrowserContext
@@ -2254,14 +2964,16 @@ async function scrape(
       }
     }
 
-    if (!challengeClear) {
-      throw new AppError(
-        'The share page appears to be blocking automation (bot/challenge page detected).',
-        'Try --use-chrome-profile to use your real browser session, or --headful to watch the browser. You may need to visit the link in Chrome first to pass any captcha.'
-      )
-    }
+      if (!challengeClear) {
+        throw new AppError(
+          'The share page appears to be blocking automation (bot/challenge page detected).',
+          'Try --use-chrome-profile to use your real browser session, or --headful to watch the browser. You may need to visit the link in Chrome first to pass any captcha.'
+        )
+      }
+    } // end of standard launch mode else block
 
-    const selector = opts.waitForSelector ?? (await (async () => {
+    // Helper to find a working selector
+    const findSelector = async (): Promise<string | null> => {
       const candidates = PROVIDER_SELECTOR_CANDIDATES[provider] ?? PROVIDER_SELECTOR_CANDIDATES.chatgpt
       const perTry = Math.max(2000, timeoutMs / 6)
       // Try each candidate group with a short "attached" wait; fall back to DOM counting.
@@ -2288,11 +3000,25 @@ async function scrape(
         if (opts.debug) console.error(chalk.gray(`Selector found via DOM scan: ${hit.selector} (count ${hit.count})`))
         return hit.selector
       }
+      return null
+    }
+
+    const selector = opts.waitForSelector ?? (await findSelector())
+
+    if (!selector) {
+      // ChatGPT has aggressive headless detection - provide helpful message
+      if (currentHeadless && provider === 'chatgpt') {
+        throw new AppError(
+          'ChatGPT is blocking headless browser access.',
+          'Use --headful to run with a visible browser window. ChatGPT now requires a visible browser to display shared conversations.'
+        )
+      }
+      // Note: Claude.ai uses CDP mode and returns early, so it never reaches here
       throw new AppError(
         'No conversation content found for this provider.',
         'Try --wait-for-selector "<css>" to override, or verify the page layout.'
       )
-    })())
+    }
 
     await attemptWithBackoff(
       async () => {
@@ -2407,7 +3133,11 @@ async function scrape(
             ''
           const testId = (el.getAttribute('data-testid') ?? '').toLowerCase()
           const className = (el.getAttribute('class') ?? '').toLowerCase()
+          // Claude.ai uses data-is-streaming for assistant messages
+          const isStreaming = el.hasAttribute('data-is-streaming') || el.closest('[data-is-streaming]') !== null
           const inferRole = (): string => {
+            // Claude.ai: data-is-streaming indicates assistant response
+            if (isStreaming) return 'assistant'
             const source = `${attrRole} ${testId} ${className}`
             if (/assistant|bot|system|model|gemini|grok/.test(source)) return 'assistant'
             if (/user|human|you/.test(source)) return 'user'
@@ -2430,6 +3160,7 @@ async function scrape(
         .filter((m): m is { role: MessageRole; html: string } => Boolean(m))
     }, selectorGroups)) as ScrapedMessage[]
 
+    // Note: Claude uses CDP mode and returns early, so it's never in this code path
     if (provider === 'grok' || provider === 'gemini') {
       let unknownIdx = 0
       messages = messages.map(m => {
@@ -2450,7 +3181,7 @@ async function scrape(
     }
 
     const lines: string[] = []
-    const titleWithoutPrefix = title.replace(/^(ChatGPT|Gemini|Grok)\s*-?\s*/i, '')
+    const titleWithoutPrefix = title.replace(/^(ChatGPT|Gemini|Grok|Claude)\s*-?\s*/i, '').replace(/\s*\|\s*Claude$/i, '')
     const headingPrefix = provider === 'gemini' ? 'Gemini' : provider === 'grok' ? 'Grok' : 'ChatGPT'
     lines.push(`# ${headingPrefix} Conversation: ${titleWithoutPrefix}`)
     lines.push('')
@@ -2494,6 +3225,41 @@ async function scrape(
   } finally {
     if (browser) {
       await browser.close()
+    }
+
+    // Restore saved Chrome tabs if we had to close Chrome for CDP mode
+    if (process.platform === 'darwin') {
+      const tabsFile = path.join(os.tmpdir(), 'csctf-chrome-tabs.json')
+      if (fs.existsSync(tabsFile)) {
+        try {
+          const saved = JSON.parse(fs.readFileSync(tabsFile, 'utf-8'))
+          // Handle both old format (array) and new format ({ app, tabs })
+          const savedTabs: string[] = Array.isArray(saved) ? saved : (saved.tabs || [])
+          const chromeApp = saved.app || 'Google Chrome'
+          const chromePaths: Record<string, string> = {
+            'Google Chrome Canary': '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+            'Google Chrome': '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          }
+          const chromePath = chromePaths[chromeApp] || chromePaths['Google Chrome']
+
+          if (savedTabs.length > 0) {
+            console.error(chalk.blue('\n[8/8] Restoring your Chrome tabs...'))
+            // Reopen Chrome with saved tabs
+            const tabArgs = savedTabs.slice(0, 20) // Limit to 20 tabs to avoid issues
+            spawn(chromePath, tabArgs, {
+              detached: true,
+              stdio: 'ignore'
+            }).unref()
+            console.error(chalk.gray(`    Restored ${Math.min(savedTabs.length, 20)} tab(s)`))
+            if (savedTabs.length > 20) {
+              console.error(chalk.gray(`    (${savedTabs.length - 20} additional tabs not restored to avoid overload)`))
+            }
+          }
+          fs.unlinkSync(tabsFile) // Clean up
+        } catch {
+          // Ignore restoration errors
+        }
+      }
     }
   }
 }
@@ -2556,15 +3322,15 @@ async function main(): Promise<void> {
     process.exit(url ? 0 : 1)
   }
   if (!/^https?:\/\//i.test(url)) {
-    fail('Please pass a valid http(s) URL (public ChatGPT, Gemini, or Grok share link).')
+    fail('Please pass a valid http(s) URL (public ChatGPT, Gemini, Grok, or Claude share link).')
     usage()
     process.exit(1)
   }
   const sharePattern =
-    /^https?:\/\/(chatgpt\.com|share\.chatgpt\.com|chat\.openai\.com|gemini\.google\.com|grok\.com)\/share\//i
+    /^https?:\/\/(chatgpt\.com|share\.chatgpt\.com|chat\.openai\.com|gemini\.google\.com|grok\.com|claude\.ai)\/share\//i
   if (!sharePattern.test(url)) {
     fail(
-      'The URL should be a public ChatGPT, Gemini, or Grok share link (e.g., https://chatgpt.com/share/<id>, https://gemini.google.com/share/<id>, or https://grok.com/share/<id>).'
+      'The URL should be a public ChatGPT, Gemini, Grok, or Claude share link (e.g., https://chatgpt.com/share/<id>, https://gemini.google.com/share/<id>, https://grok.com/share/<id>, or https://claude.ai/share/<id>).'
     )
     process.exit(1)
   }
