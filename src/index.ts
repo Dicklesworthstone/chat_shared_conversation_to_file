@@ -1885,6 +1885,7 @@ async function scrape(
 ): Promise<{ title: string; markdown: string; retrievedAt: string }> {
   const td = buildTurndown()
   let browser: Browser | null = null
+  let context: BrowserContext | null = null
   let page!: Page
   let currentHeadless = opts.headless
   const resolveChromiumExecutable = (): string | undefined => {
@@ -2692,17 +2693,19 @@ async function scrape(
             results.push({ role, content: el.innerHTML })
           })
         } else if (prov === 'claude') {
-          // Claude: user-message and data-is-streaming
-          const userMsgs = document.querySelectorAll('[data-testid="user-message"]')
-          const assistantMsgs = document.querySelectorAll('[data-is-streaming], .prose')
-          userMsgs.forEach(el => results.push({ role: 'user', content: el.innerHTML }))
-          assistantMsgs.forEach(el => results.push({ role: 'assistant', content: el.innerHTML }))
+          // Claude: query all messages together to preserve DOM order
+          const msgs = document.querySelectorAll('[data-testid="user-message"], [data-is-streaming]')
+          msgs.forEach(el => {
+            const isUser = el.getAttribute('data-testid') === 'user-message'
+            results.push({ role: isUser ? 'user' : 'assistant', content: el.innerHTML })
+          })
         } else if (prov === 'gemini') {
-          // Gemini: user-query and response-container
-          const userMsgs = document.querySelectorAll('user-query')
-          const assistantMsgs = document.querySelectorAll('response-container')
-          userMsgs.forEach(el => results.push({ role: 'user', content: el.innerHTML }))
-          assistantMsgs.forEach(el => results.push({ role: 'assistant', content: el.innerHTML }))
+          // Gemini: query all messages together to preserve DOM order
+          const msgs = document.querySelectorAll('user-query, response-container')
+          msgs.forEach(el => {
+            const isUser = el.tagName.toLowerCase() === 'user-query'
+            results.push({ role: isUser ? 'user' : 'assistant', content: el.innerHTML })
+          })
         } else if (prov === 'grok') {
           // Grok: similar to ChatGPT with message containers
           const msgs = document.querySelectorAll('[data-testid*="message"], [data-message-author-role]')
@@ -2859,7 +2862,6 @@ async function scrape(
       try {
       const useProfile = opts.useChromeProfile ?? false
       const useStealth = opts.stealthMode ?? true // Enable stealth by default now
-      let context: BrowserContext | null = null
 
       const result = await launchBrowser(currentHeadless, useProfile)
     if ('newPage' in result && typeof result.newPage === 'function') {
@@ -3010,6 +3012,11 @@ async function scrape(
         const isBlockingError = /closed|terminated|blocked|bot.?detect|captcha|cloudflare|verify.*human|access denied|timeout|refused/i.test(errMsg)
 
         if (isBlockingError && process.platform === 'darwin' && !useCdp) {
+          // Close context if we were using persistent context (browser might be null in that case)
+          if (context) {
+            await context.close().catch(() => {})
+            context = null
+          }
           await triggerCdpFallback('Playwright blocked - ' + (errMsg.length > 60 ? errMsg.slice(0, 60) + '...' : errMsg))
           continue // Retry with CDP mode
         }
@@ -3279,6 +3286,9 @@ async function scrape(
   } finally {
     if (browser) {
       await browser.close()
+    }
+    if (context) {
+      await context.close().catch(() => {})
     }
 
     // Restore saved Chrome tabs if we had to close Chrome for CDP mode
