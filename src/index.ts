@@ -3349,15 +3349,15 @@ async function scrape(
           const chromePath = chromePaths[chromeApp] || chromePaths['Google Chrome']
 
           if (savedTabs.length > 0) {
-            console.error(chalk.blue('\n[8/8] Restoring your Chrome tabs...'))
+            if (!opts.quiet) console.error(chalk.blue('\n[8/8] Restoring your Chrome tabs...'))
             // Reopen Chrome with saved tabs
             const tabArgs = savedTabs.slice(0, 20) // Limit to 20 tabs to avoid issues
             spawn(chromePath, tabArgs, {
               detached: true,
               stdio: 'ignore'
             }).unref()
-            console.error(chalk.gray(`    Restored ${Math.min(savedTabs.length, 20)} tab(s)`))
-            if (savedTabs.length > 20) {
+            if (!opts.quiet) console.error(chalk.gray(`    Restored ${Math.min(savedTabs.length, 20)} tab(s)`))
+            if (!opts.quiet && savedTabs.length > 20) {
               console.error(chalk.gray(`    (${savedTabs.length - 20} additional tabs not restored to avoid overload)`))
             }
           }
