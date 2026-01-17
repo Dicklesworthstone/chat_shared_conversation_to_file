@@ -10,7 +10,7 @@ Single-file Bun-native CLI that turns public ChatGPT, Gemini, Grok, and Claude s
 <div align="center">
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/chat_shared_conversation_to_file/main/install.sh \
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/chat_shared_conversation_to_file/main/install.sh?$(date +%s)" \
   | bash
 ```
 
