@@ -1,0 +1,51 @@
+name: release-automation
+
+# Watches main for a package.json version bump and auto-creates a
+# matching `vX.Y.Z` tag, which then triggers release.yml.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Read version from package.json
+        id: version
+        run: |
+          version=$(node -e "console.log(require('./package.json').version)")
+          if [ -z "$version" ]; then
+            echo "::error::Unable to parse version from package.json"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Read latest tag
+        id: latest
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        if: steps.latest.outputs.latest != format('v{0}', steps.version.outputs.version)
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          echo "Creating release tag $tag"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"
+
+      - name: Skip (already tagged)
+        if: steps.latest.outputs.latest == format('v{0}', steps.version.outputs.version)
+        run: |
+          echo "Latest tag matches package.json version; nothing to do."

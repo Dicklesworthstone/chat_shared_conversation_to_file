@@ -1,0 +1,178 @@
+name: Release
+
+# Triggered by version tags. Compiles the Bun CLI into platform-specific
+# single-file binaries (one cross-target per matrix runner) and uploads
+# them under the asset names install.sh expects (csctf-linux-x64,
+# csctf-macos-arm64, ...).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            asset: csctf-linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            asset: csctf-linux-arm64
+          - os: macos-15-intel
+            target: mac-x64
+            asset: csctf-macos-x64
+          - os: macos-14
+            target: mac-arm64
+            asset: csctf-macos-arm64
+          - os: windows-latest
+            target: windows-x64
+            asset: csctf-windows-x64.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (advisory)
+        run: bun run typecheck
+        continue-on-error: true
+
+      - name: Compile single-file binary
+        run: bun run build:${{ matrix.target }}
+
+      - name: Compute SHA256 (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      - name: Compute SHA256 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Push-Location dist
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.asset }}").Hash.ToLower()
+          "$hash  ${{ matrix.asset }}" | Out-File -Encoding ASCII "${{ matrix.asset }}.sha256"
+          Pop-Location
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate aggregate SHA256SUMS
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          rm -f SHA256SUMS
+          for f in csctf-*; do
+            case "$f" in
+              *.sha256|SHA256SUMS) ;;
+              *) shasum -a 256 "$f" >> SHA256SUMS ;;
+            esac
+          done
+          cat SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.1
+
+      - name: Sign release artifacts (sigstore bundle)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          for f in csctf-*; do
+            case "$f" in
+              *.sha256|*.sigstore.json|SHA256SUMS) continue ;;
+            esac
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
+          done
+
+      - name: Copy install scripts to dist
+        run: |
+          cp install.sh dist/ 2>/dev/null || echo "No install.sh found"
+          cp install.ps1 dist/ 2>/dev/null || echo "No install.ps1 found"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-homebrew-tap:
+    name: Notify Homebrew Tap
+    runs-on: ubuntu-latest
+    needs: release
+    timeout-minutes: 5
+    continue-on-error: true
+    env:
+      HAS_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - name: Check for token
+        id: check
+        run: |
+          if [[ "${{ env.HAS_TOKEN }}" != "true" ]]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not configured, skipping notification"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract version from tag
+        if: steps.check.outputs.skip != 'true'
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Trigger formula update
+        if: steps.check.outputs.skip != 'true'
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: Dicklesworthstone/homebrew-tap
+          event-type: formula-update
+          client-payload: |
+            {
+              "tool": "csctf",
+              "version": "${{ steps.version.outputs.version }}"
+            }
