@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import os from "os";
 import path from "path";
-import { slugify, uniquePath, renderHtmlDocument, publishToGhPages } from "./index";
+import { publishToGhPages, renderHtmlDocument, slugify, uniquePath } from "./index";
 
 describe("slugify", () => {
   it("slugifies and lowercases titles", () => {
@@ -30,13 +30,18 @@ describe("slugify", () => {
 
 describe("renderHtmlDocument", () => {
   it("renders HTML with inline styles, toc, and no script tags", () => {
-    const md = "# Title\n\n## Section\n\nContent with `code`."
-    const html = renderHtmlDocument(md, "Sample Title", "https://example.com", "2024-01-01T00:00:00.000Z")
-    expect(html.startsWith("<!doctype html>")).toBe(true)
-    expect(html).toContain("<style>")
-    expect(html).toContain("Contents")
-    expect(html).toContain('<article class="article">')
-    expect(/<script/i.test(html)).toBe(false)
+    const md = "# Title\n\n## Section\n\nContent with `code`.";
+    const html = renderHtmlDocument(
+      md,
+      "Sample Title",
+      "https://example.com",
+      "2024-01-01T00:00:00.000Z",
+    );
+    expect(html.startsWith("<!doctype html>")).toBe(true);
+    expect(html).toContain("<style>");
+    expect(html).toContain("Contents");
+    expect(html).toContain('<article class="article">');
+    expect(/<script/i.test(html)).toBe(false);
   });
 });
 
@@ -51,7 +56,7 @@ describe("publishToGhPages (dry run)", () => {
     const cfg = await publishToGhPages({
       files: [
         { path: mdPath, kind: "md" },
-        { path: htmlPath, kind: "html" }
+        { path: htmlPath, kind: "html" },
       ],
       repo: "example/example",
       branch: "gh-pages",
@@ -61,7 +66,12 @@ describe("publishToGhPages (dry run)", () => {
       dryRun: true,
       remember: false,
       config: {},
-      entry: { title: "Sample Title", md: "sample.md", html: "sample.html", addedAt: "2024-01-01T00:00:00.000Z" }
+      entry: {
+        title: "Sample Title",
+        md: "sample.md",
+        html: "sample.html",
+        addedAt: "2024-01-01T00:00:00.000Z",
+      },
     });
 
     // dry-run should not modify config or attempt network
@@ -81,4 +91,3 @@ describe("uniquePath", () => {
     expect(third.endsWith("_3.md")).toBe(true);
   });
 });
-

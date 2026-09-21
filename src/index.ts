@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-chromium'
-import puppeteer, { type Browser as PuppeteerBrowser, type Page as PuppeteerPage } from 'puppeteer-core'
-import TurndownService, { type Rule } from 'turndown'
-import fs from 'fs'
-import path from 'path'
 import chalk from 'chalk'
-import MarkdownIt from 'markdown-it'
-import type { Options as MdOptions } from 'markdown-it'
+import { spawn, spawnSync } from 'child_process'
+import fs from 'fs'
 import hljs from 'highlight.js'
-import { spawnSync, spawn } from 'child_process'
+import type { Options as MdOptions } from 'markdown-it'
+import MarkdownIt from 'markdown-it'
 import os from 'os'
+import path from 'path'
+import { type Browser, type BrowserContext, chromium, type Page } from 'playwright-chromium'
+import puppeteer, { type Browser as PuppeteerBrowser, type Page as PuppeteerPage } from 'puppeteer-core'
 import readline from 'readline'
+import TurndownService, { type Rule } from 'turndown'
 import pkg from '../package.json' assert { type: 'json' }
 
 type Provider = 'chatgpt' | 'gemini' | 'grok' | 'claude'
@@ -2050,7 +2050,7 @@ async function scrape(
       if (type === '2d' && ctx) {
         const ctx2d = ctx as CanvasRenderingContext2D
         const origGetImageData = ctx2d.getImageData.bind(ctx2d)
-        ctx2d.getImageData = function (sx: number, sy: number, sw: number, sh: number, settings?: ImageDataSettings) {
+        ctx2d.getImageData = (sx: number, sy: number, sw: number, sh: number, settings?: ImageDataSettings) => {
           const imageData = origGetImageData(sx, sy, sw, sh, settings)
           // Add tiny noise to prevent fingerprinting
           for (let i = 0; i < imageData.data.length; i += 4) {
@@ -2129,7 +2129,7 @@ async function scrape(
     // Hide automation-related errors in stack traces
     const ErrorWithStackTrace = Error as typeof Error & { prepareStackTrace?: unknown }
     const origPrepareStackTrace = ErrorWithStackTrace.prepareStackTrace
-    ErrorWithStackTrace.prepareStackTrace = function (err: Error, stack: NodeJS.CallSite[]) {
+    ErrorWithStackTrace.prepareStackTrace = (err: Error, stack: NodeJS.CallSite[]) => {
       // Filter out any Playwright/Puppeteer related frames
       const filteredStack = stack.filter(frame => {
         const fileName = frame.getFileName() || ''
@@ -2149,7 +2149,7 @@ async function scrape(
     // Prevent detection via missing window.Notification
     if (typeof Notification === 'undefined') {
       const win = window as typeof window & { Notification: unknown }
-      const notifShim = function () {} as unknown as typeof Notification
+      const notifShim = (() => {}) as unknown as typeof Notification
       win.Notification = notifShim
       ;(notifShim as unknown as { permission: string }).permission = 'default'
       ;(notifShim as unknown as { requestPermission: () => Promise<string> }).requestPermission = () => Promise.resolve('default')
@@ -2259,9 +2259,7 @@ async function scrape(
 
     // Spoof timezone if needed (some sites check for inconsistencies)
     const origDateTimeFormat = Intl.DateTimeFormat
-    ;(Intl as { DateTimeFormat: typeof origDateTimeFormat }).DateTimeFormat = function (locales?: string | string[], options?: Intl.DateTimeFormatOptions) {
-      return new origDateTimeFormat(locales, { ...options, timeZone: options?.timeZone || 'America/New_York' })
-    } as typeof origDateTimeFormat
+    ;(Intl as { DateTimeFormat: typeof origDateTimeFormat }).DateTimeFormat = ((locales?: string | string[], options?: Intl.DateTimeFormatOptions) => new origDateTimeFormat(locales, { ...options, timeZone: options?.timeZone || 'America/New_York' })) as typeof origDateTimeFormat
   }
 
   // Current Chrome UA (Dec 2024)
