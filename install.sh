@@ -12,19 +12,22 @@ DEST="${DEST:-$DEST_DEFAULT}"
 EASY=0
 QUIET=0
 FROM_SOURCE=0
-LOCK_FILE="/tmp/csctf-install.lock"
-VERIFY=0
+VERIFY=1
 CHECKSUM_URL="${CHECKSUM_URL:-}"
+HTTP_USER_AGENT="OpenAI File Downloader, XaiImageApiFetch/1.0"
 
 log() { [ "$QUIET" -eq 1 ] && return 0; echo -e "$@"; }
 info() { log "\033[0;34m→\033[0m $*"; }
 ok()   { log "\033[0;32m✓\033[0m $*"; }
-warn() { log "\033[1;33m⚠\033[0m $*"; }
-err()  { log "\033[0;31m✗\033[0m $*"; }
+warn() { echo -e "\033[1;33m⚠\033[0m $*" >&2; }
+err()  { echo -e "\033[0;31m✗\033[0m $*" >&2; }
+die()  { err "$1"; exit 1; }
 
 usage() {
   cat <<'EOFU'
-Usage: install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--from-source] [--easy-mode] [--quiet] [--verify]
+Usage: install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--from-source] [--easy-mode] [--quiet] [--verify|--no-verify]
+
+Downloaded release checksums are required by default. --no-verify is an explicit opt-out.
 
 Environment overrides:
   VERSION         Tag to install (defaults to latest release)
@@ -36,19 +39,22 @@ Environment overrides:
 EOFU
 }
 
+parse_args() {
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version) VERSION="$2"; shift 2;;
-    --dest) DEST="$2"; shift 2;;
+    --version) [ $# -ge 2 ] && [[ "$2" != -* && -n "$2" ]] || die "--version requires a release tag"; VERSION="$2"; shift 2;;
+    --dest) [ $# -ge 2 ] && [[ "$2" != -* && -n "$2" ]] || die "--dest requires a directory"; DEST="$2"; shift 2;;
     --system) DEST="/usr/local/bin"; shift;;
     --from-source) FROM_SOURCE=1; shift;;
     --easy-mode) EASY=1; shift;;
     --verify) VERIFY=1; shift;;
+    --no-verify) VERIFY=0; shift;;
     --quiet|-q) QUIET=1; shift;;
     -h|--help) usage; exit 0;;
-    *) shift;;
+    *) die "Unknown option: $1";;
   esac
 done
+}
 
 maybe_add_path() {
   case ":$PATH:" in
@@ -81,15 +87,13 @@ resolve_version() {
   local latest_url="https://api.github.com/repos/${OWNER}/${REPO}/releases/latest"
   local tag=""
   info "Resolving latest version..."
-  if ! tag=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$latest_url" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'); then
-    tag=""
-  fi
+  tag=$(curl -fsSL -A "$HTTP_USER_AGENT" -H "Accept: application/vnd.github.v3+json" "$latest_url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') \
+    || die "Could not resolve the latest release; pass --version explicitly"
   if [ -n "$tag" ]; then
     VERSION="$tag"
     info "Resolved latest: $VERSION"
   else
-    VERSION=""
-    warn "Could not resolve latest version; will use releases/latest URL"
+    die "No release tag resolved"
   fi
 }
 
@@ -113,38 +117,35 @@ detect_target() {
     linux-aarch64) ASSET="csctf-linux-arm64" ;;
     darwin-arm64) ASSET="csctf-macos-arm64" ;;
     darwin-x86_64) ASSET="csctf-macos-x64" ;;
-    msys*-*|mingw*-*|cygwin*-*) ASSET="csctf-windows-x64.exe" ;;
-    *) warn "Unknown platform ${OS}/${ARCH}; will build from source (requires git + bun)"; FROM_SOURCE=1 ;;
+    msys*-x86_64|mingw*-x86_64|cygwin*-x86_64) ASSET="csctf-windows-x64.exe" ;;
+    *) [ "$FROM_SOURCE" -eq 1 ] || die "Unsupported binary platform ${OS}/${ARCH}; use --from-source explicitly" ;;
   esac
 }
 
-lock() {
-  LOCK_DIR="${LOCK_FILE}.d"
-  LOCKED=0
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    LOCKED=1
-    echo $$ > "$LOCK_DIR/pid"
+verify_artifact() {
+  local artifact="$1" manifest="$2" expected actual
+  if [ "$VERIFY" -eq 0 ]; then
+    warn "Checksum verification explicitly disabled"
+    return 0
+  fi
+  expected=$(awk -v name="$ASSET" '
+    $2 == name || $2 == "*" name {
+      count++; sum = $1;
+      if (NF != 2) malformed = 1;
+    }
+    END {
+      if (count == 1 && !malformed && length(sum) == 64 && sum !~ /[^0-9a-fA-F]/) print tolower(sum);
+      else exit 1;
+    }' "$manifest") || die "Missing, malformed, or duplicate checksum for $ASSET"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$artifact" | awk '{print tolower($1)}') || die "Could not hash $ASSET"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "$artifact" | awk '{print tolower($1)}') || die "Could not hash $ASSET"
   else
-    if [ -f "$LOCK_DIR/pid" ]; then
-      OLD_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
-      if [ -n "$OLD_PID" ] && ! kill -0 "$OLD_PID" 2>/dev/null; then
-        rm -rf "$LOCK_DIR"
-        if mkdir "$LOCK_DIR" 2>/dev/null; then
-          LOCKED=1
-          echo $$ > "$LOCK_DIR/pid"
-        fi
-      fi
-    fi
+    die "sha256sum or shasum is required to verify $ASSET"
   fi
-  if [ "$LOCKED" -eq 0 ]; then
-    err "Another installer is running (lock $LOCK_DIR)"
-    exit 1
-  fi
-}
-
-cleanup() {
-  rm -rf "$TMP"
-  if [ "${LOCKED:-0}" -eq 1 ]; then rm -rf "$LOCK_DIR"; fi
+  [ "$actual" = "$expected" ] || die "Checksum verification failed for $ASSET"
+  ok "Checksum verified: $ASSET"
 }
 
 download_binary() {
@@ -156,43 +157,15 @@ download_binary() {
   fi
   local url="https://github.com/${OWNER}/${REPO}/releases/${tag_path}/${ASSET}"
   info "Downloading ${url}"
-  if ! curl -fL "$url" -o "$TMP/${ASSET}"; then
-    warn "Download failed; falling back to build from source (requires git + bun)"
-    FROM_SOURCE=1
-    return 1
-  fi
-
-  # Optional checksum verification
-  local hash_cmd=""
-  if command -v sha256sum >/dev/null 2>&1; then
-    hash_cmd="sha256sum"
-  elif command -v shasum >/dev/null 2>&1; then
-    hash_cmd="shasum -a 256"
-  fi
-
-  if [ -n "$hash_cmd" ]; then
+  curl -fL -A "$HTTP_USER_AGENT" "$url" -o "$TMP/${ASSET}" \
+    || die "Binary download failed; retained stage: $TMP"
+  if [ "$VERIFY" -eq 1 ]; then
     local checksum_target="${CHECKSUM_URL:-${url}.sha256}"
-    if curl -fL "$checksum_target" -o "$TMP/${ASSET}.sha256"; then
-      local expected
-      expected=$(awk '{print $1}' "$TMP/${ASSET}.sha256" | head -n1)
-      if [ -n "$expected" ]; then
-        echo "${expected}  $TMP/${ASSET}" | eval "$hash_cmd -c -" || { err "Checksum verification failed"; exit 1; }
-        ok "Checksum verified"
-      fi
-    else
-      if [ "$VERIFY" -eq 1 ]; then
-        err "Checksum required but not available at ${checksum_target}"
-        exit 1
-      else
-        warn "Checksum not available; proceeding without verification"
-      fi
-    fi
-  else
-    warn "No sha256 utility found; skipping checksum verification"
+    curl -fL -A "$HTTP_USER_AGENT" "$checksum_target" -o "$TMP/${ASSET}.sha256" \
+      || die "Checksum required but not available at ${checksum_target}"
   fi
-
-  install -m 0755 "$TMP/${ASSET}" "$DEST/${BINARY}"
-  ok "Installed ${BINARY} to $DEST"
+  verify_artifact "$TMP/${ASSET}" "$TMP/${ASSET}.sha256"
+  BINARY_STAGE="$TMP/${ASSET}"
 }
 
 build_from_source() {
@@ -200,28 +173,48 @@ build_from_source() {
   command -v git >/dev/null 2>&1 || { err "git is required"; exit 1; }
   command -v bun >/dev/null 2>&1 || { err "bun is required"; exit 1; }
 
-  git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
+  git -c http.userAgent="$HTTP_USER_AGENT" clone --depth 1 --branch "$VERSION" \
+    "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
   (
     cd "$TMP/src"
     bun install --frozen-lockfile
     bun run build
   )
 
-  local bin_path="$TMP/src/dist/${BINARY}"
-  if [ -f "$TMP/src/dist/${BINARY}.exe" ]; then
-    bin_path="$TMP/src/dist/${BINARY}.exe"
+  local bin_path="$TMP/src/dist/csctf"
+  if [ -f "$TMP/src/dist/csctf.exe" ]; then
+    bin_path="$TMP/src/dist/csctf.exe"
   fi
 
   [ -x "$bin_path" ] || { err "Build failed; binary not found"; exit 1; }
-  install -m 0755 "$bin_path" "$DEST/${BINARY}"
-  ok "Installed ${BINARY} to $DEST (built from source)"
+  BINARY_STAGE="$bin_path"
 }
 
+publish_binary() {
+  local destination="$1" candidate backup
+  [ ! -L "$destination" ] || die "Refusing to replace a symlink: $destination"
+  [ ! -e "$destination" ] || [ -f "$destination" ] || die "Destination is not a regular file: $destination"
+  candidate=$(mktemp "$DEST/.csctf-install.XXXXXX")
+  cp "$BINARY_STAGE" "$candidate" || die "Could not prepare the binary"
+  chmod 755 "$candidate" || die "Could not set binary permissions"
+  if [ -f "$destination" ]; then
+    backup=$(mktemp "${destination}.previous.XXXXXX")
+    cp -p "$destination" "$backup" || die "Could not preserve the incumbent binary"
+    info "Retaining incumbent backup: $backup"
+  fi
+  mv -f "$candidate" "$destination" || die "Could not publish the prepared binary"
+  [ -x "$destination" ] || die "Installed binary is not executable"
+  ok "Installed ${BINARY} to $DEST"
+}
+
+install_main() {
 resolve_version
+case "$VERSION" in
+  ""|*[!a-zA-Z0-9._+-]*) die "Invalid release tag: $VERSION";;
+esac
 detect_target
-lock
-TMP=$(mktemp -d)
-trap cleanup EXIT
+TMP=$(mktemp -d "$DEST/.csctf-stage.XXXXXX")
+info "Retaining installer stage: $TMP"
 mkdir -p "$DEST"
 
 STEP_TOTAL=6
@@ -234,17 +227,11 @@ log_step() {
 log_step "Resolved version ${VERSION:-latest}"
 log_step "Detected platform ${OS:-unknown}/${ARCH:-unknown}"
 
-DOWNLOAD_OK=1
 if [ "$FROM_SOURCE" -eq 0 ]; then
   log_step "Downloading release artifact"
-  download_binary || DOWNLOAD_OK=0
+  download_binary
 else
   log_step "Skipping download (build from source requested)"
-  DOWNLOAD_OK=0
-fi
-
-if [ "$FROM_SOURCE" -eq 0 ] && [ "$DOWNLOAD_OK" -eq 0 ]; then
-  FROM_SOURCE=1
 fi
 
 if [ "$FROM_SOURCE" -eq 1 ]; then
@@ -254,8 +241,46 @@ else
   log_step "Build step skipped (binary already downloaded)"
 fi
 
+INSTALL_PATH="$DEST/$BINARY"
+case "$OS" in
+  msys*|mingw*|cygwin*) case "$BINARY" in *.exe) ;; *) INSTALL_PATH="${INSTALL_PATH}.exe";; esac;;
+esac
+publish_binary "$INSTALL_PATH"
 log_step "Ensuring ${DEST} is on PATH"
 maybe_add_path
 log_step "Finalizing"
 ok "Done. Run: ${BINARY} <share-url (ChatGPT|Gemini|Grok|Claude)>"
+}
+
+run_locked_install() {
+  case "$BINARY" in ""|*/*|.|..) die "BINARY must be a single filename";; esac
+  mkdir -p "$DEST" || die "Could not prepare the install directory"
+  DEST=$(cd "$DEST" && pwd -P) || die "Could not resolve the install directory"
+  local lock_file="$DEST/.csctf-install.lock" payload
+  [ ! -L "$lock_file" ] || die "Refusing a symlink installer lock"
+  payload=$(
+    declare -p VERSION OWNER REPO BINARY DEST EASY QUIET FROM_SOURCE VERIFY CHECKSUM_URL HTTP_USER_AGENT
+    declare -f log info ok warn err die maybe_add_path resolve_version detect_target verify_artifact download_binary build_from_source publish_binary install_main
+    printf 'set -euo pipefail\ninstall_main\n'
+  )
+  if command -v flock >/dev/null 2>&1; then
+    flock -n "$lock_file" bash -c "$payload"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MFcntl=:flock -e '
+      my $path = shift @ARGV;
+      open my $lock, ">>", $path or die "Cannot open installer lock $path: $!\n";
+      flock($lock, LOCK_EX | LOCK_NB) or die "Another installation holds $path\n";
+      system @ARGV;
+      die "Could not start installer: $!\n" if $? == -1;
+      exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+    ' "$lock_file" bash -c "$payload"
+  else
+    die "A kernel file-lock helper (flock or Perl) is required; refusing an unlocked installation"
+  fi
+}
+
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "$0" ]]; then
+  parse_args "$@"
+  run_locked_install
+fi
 

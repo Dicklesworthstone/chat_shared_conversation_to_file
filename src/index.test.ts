@@ -3,7 +3,29 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import os from "os";
 import path from "path";
-import { publishToGhPages, renderHtmlDocument, slugify, uniquePath } from "./index";
+import { matchesShareUrl, publishToGhPages, renderHtmlDocument, slugify, uniquePath } from "./index";
+
+describe("CDP share tab selection", () => {
+  const requested = "https://claude.ai/share/conversation-42";
+
+  it("accepts the requested share with a fragment or canonical trailing slash", () => {
+    expect(matchesShareUrl(requested + "#message-2", requested)).toBe(true);
+    expect(matchesShareUrl(requested + "/", requested)).toBe(true);
+  });
+
+  it("rejects unrelated tabs even when their URL contains the same share identifier", () => {
+    for (const candidate of [
+      "about:blank",
+      "https://claude.ai/share/different-conversation",
+      "https://example.com/share/conversation-42",
+      "https://claude.ai/share/conversation-42-extra",
+      "https://claude.ai/other/conversation-42",
+      requested + "?access=other",
+    ]) {
+      expect(matchesShareUrl(candidate, requested)).toBe(false);
+    }
+  });
+});
 
 describe("slugify", () => {
   it("slugifies and lowercases titles", () => {
@@ -29,6 +51,21 @@ describe("slugify", () => {
 });
 
 describe("renderHtmlDocument", () => {
+  it("keeps raw active HTML as text while preserving ordinary Markdown formatting", () => {
+    const markdown = [
+      "**formatting survives**",
+      '<img src="data:image/png;base64,AA==" onerror="document.documentElement.dataset.csctfInjection=\'fired\'">',
+      '<svg onload="document.documentElement.dataset.csctfInjection=\'fired\'"></svg>',
+      '<iframe srcdoc="<p>embedded content</p>"></iframe>',
+    ].join("\n\n");
+    const html = renderHtmlDocument(markdown, "Untrusted markup", "https://example.com", "2026-10-09T00:00:00.000Z");
+    expect(html).toContain("<strong>formatting survives</strong>");
+    expect(html).toContain("&lt;img");
+    expect(html).toContain("&lt;svg");
+    expect(html).toContain("&lt;iframe");
+    expect(html).not.toMatch(/<(?:img|svg|iframe)\b/i);
+  });
+
   it("renders HTML with inline styles, toc, and no script tags", () => {
     const md = "# Title\n\n## Section\n\nContent with `code`.";
     const html = renderHtmlDocument(

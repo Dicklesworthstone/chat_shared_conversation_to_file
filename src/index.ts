@@ -14,6 +14,7 @@ import TurndownService, { type Rule } from 'turndown'
 import pkg from '../package.json' assert { type: 'json' }
 
 type Provider = 'chatgpt' | 'gemini' | 'grok' | 'claude'
+const HTTP_USER_AGENT = 'OpenAI File Downloader, XaiImageApiFetch/1.0'
 const PROVIDER_PATTERNS: { id: Provider; patterns: RegExp[] }[] = [
   { id: 'gemini', patterns: [/gemini\.google\.com$/i] },
   { id: 'grok', patterns: [/grok\.com$/i, /grok\.x\.ai$/i] },
@@ -616,7 +617,9 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
   const counts = new Map<string, number>()
   const headings: { level: number; text: string; id: string }[] = []
 
-  const md = new MarkdownIt({ html: true, linkify: true, breaks: true, highlight: () => '' })
+  // Share content is untrusted. Keep raw HTML visible as text instead of
+  // admitting event handlers, embedded frames, or other executable markup.
+  const md = new MarkdownIt({ html: false, linkify: true, breaks: true, highlight: () => '' })
 
   md.renderer.rules.fence = (tokens: any[], idx: number) => {
     const token = tokens[idx]
@@ -624,13 +627,12 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
     const lang = (token.info || '').trim()
 
     const render = (language: string | undefined, raw: string) => {
-      const highlighted = language && hljs.getLanguage(language)
-        ? hljs.highlight(raw, { language, ignoreIllegals: true }).value
-        : hljs.highlightAuto(raw).value
-      const label = language && hljs.getLanguage(language)
-        ? language
-        : hljs.highlightAuto(raw).language || 'text'
-      return `<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">${label}</span></div><pre><code class="hljs language-${label}">${highlighted}</code></pre></div>`
+      const supportedLanguage = language && hljs.getLanguage(language) ? language : undefined
+      const highlighted = supportedLanguage
+        ? hljs.highlight(raw, { language: supportedLanguage, ignoreIllegals: true })
+        : hljs.highlightAuto(raw)
+      const label = supportedLanguage || highlighted.language || 'text'
+      return `<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">${label}</span></div><pre><code class="hljs language-${label}">${highlighted.value}</code></pre></div>`
     }
 
     return render(lang || undefined, code)
@@ -652,17 +654,7 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
     return self.renderToken(tokens, idx, opts)
   }
 
-  // Escape script/style tags so code examples render visibly without executing or being stripped.
-  const escapeExecutableTags = (html: string): string =>
-    html
-      .replace(/<script/gi, '&lt;script')
-      .replace(/<\/script>/gi, '&lt;/script&gt;')
-      .replace(/<style/gi, '&lt;style')
-      .replace(/<\/style>/gi, '&lt;/style&gt;')
-
-  const safeMarkdown = escapeExecutableTags(markdown)
-  const rendered = md.render(safeMarkdown)
-  const body = escapeExecutableTags(rendered)
+  const body = md.render(markdown)
   const safeTitle = escapeHtml(stripProviderPrefix(title))
   const safeSource = escapeHtml(source)
   const safeRetrieved = escapeHtml(retrieved)
@@ -1049,6 +1041,18 @@ function usage(): void {
   )
 }
 
+export function matchesShareUrl(candidate: string, requested: string): boolean {
+  try {
+    const pageUrl = new URL(candidate)
+    const shareUrl = new URL(requested)
+    return pageUrl.origin === shareUrl.origin &&
+      pageUrl.pathname.replace(/\/$/, '') === shareUrl.pathname.replace(/\/$/, '') &&
+      pageUrl.search === shareUrl.search
+  } catch {
+    return false
+  }
+}
+
 export function slugify(title: string): string {
   let base = title
     .toLowerCase()
@@ -1215,7 +1219,7 @@ async function checkForUpdates(currentVersion: string, quiet: boolean): Promise<
     const res = await fetch(latestUrl, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': `csctf/${currentVersion}`
+        'User-Agent': HTTP_USER_AGENT
       }
     })
     if (!res.ok) {
@@ -1894,6 +1898,7 @@ async function scrape(
   const td = buildTurndown()
   let browser: Browser | null = null
   let context: BrowserContext | null = null
+  let puppeteerBrowser: PuppeteerBrowser | null = null
   let page!: Page
   let currentHeadless = opts.headless
   const resolveChromiumExecutable = (): string | undefined => {
@@ -2262,10 +2267,10 @@ async function scrape(
     ;(Intl as { DateTimeFormat: typeof origDateTimeFormat }).DateTimeFormat = ((locales?: string | string[], options?: Intl.DateTimeFormatOptions) => new origDateTimeFormat(locales, { ...options, timeZone: options?.timeZone || 'America/New_York' })) as typeof origDateTimeFormat
   }
 
-  // Current Chrome UA (Dec 2024)
   const chromeVersion = '131'
-  const userAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion}.0.0.0 Safari/537.36`
+  const userAgent = HTTP_USER_AGENT
   const realHeaders: Record<string, string> = {
+    'user-agent': HTTP_USER_AGENT,
     'sec-ch-ua': `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not_A Brand";v="24"`,
     'sec-ch-ua-platform': '"macOS"',
     'sec-ch-ua-mobile': '?0',
@@ -2384,6 +2389,27 @@ async function scrape(
 
     if (useCdp) {
       const endpoint = opts.cdpEndpoint || 'http://localhost:9222'
+      const connectToChrome = async (): Promise<PuppeteerBrowser> => {
+        // Puppeteer's browserURL discovery does not forward its WebSocket headers.
+        const response = await fetch(new URL('/json/version', endpoint), {
+          headers: { 'User-Agent': HTTP_USER_AGENT },
+          signal: AbortSignal.timeout(timeoutMs)
+        })
+        if (!response.ok) throw new Error(`Chrome discovery failed: HTTP ${response.status}`)
+        const discovery = await response.json() as { webSocketDebuggerUrl?: unknown }
+        if (typeof discovery?.webSocketDebuggerUrl !== 'string') {
+          throw new Error('Chrome discovery did not return a browser WebSocket endpoint')
+        }
+        const webSocketUrl = new URL(discovery.webSocketDebuggerUrl)
+        if (webSocketUrl.protocol !== 'ws:' && webSocketUrl.protocol !== 'wss:') {
+          throw new Error('Chrome discovery returned an invalid WebSocket protocol')
+        }
+        return puppeteer.connect({
+          browserWSEndpoint: webSocketUrl.href,
+          headers: { 'User-Agent': HTTP_USER_AGENT },
+          defaultViewport: null
+        })
+      }
 
       // Track whether we launched Chrome with temp profile (for restoration later)
       let launchedWithTempProfile = false
@@ -2414,14 +2440,10 @@ async function scrape(
       const chromeAppName = activeChrome.app
 
       // Try to connect to existing Chrome with debugging using puppeteer-core (bun compatible)
-      let puppeteerBrowser: PuppeteerBrowser | null = null
       let connected = false
       try {
         if (!opts.quiet) console.error(chalk.blue(`[1/8] Connecting to Chrome...`))
-        puppeteerBrowser = await puppeteer.connect({
-          browserURL: endpoint,
-          defaultViewport: null
-        })
+        puppeteerBrowser = await connectToChrome()
         connected = true
         if (!opts.quiet) console.error(chalk.gray('    Connected to existing Chrome instance'))
       } catch (connectErr) {
@@ -2576,6 +2598,7 @@ async function scrape(
         // Launch Chrome with temp profile that has debugging enabled
         const child = spawn(chromePath, [
           '--remote-debugging-port=9222',
+          '--user-agent=' + HTTP_USER_AGENT,
           '--user-data-dir=' + tempProfileDir,
           '--no-first-run',
           '--no-default-browser-check',
@@ -2599,10 +2622,7 @@ async function scrape(
         for (let attempt = 0; attempt < 15; attempt++) {
           await new Promise(r => setTimeout(r, 1000))
           try {
-            puppeteerBrowser = await puppeteer.connect({
-              browserURL: endpoint,
-              defaultViewport: null
-            })
+            puppeteerBrowser = await connectToChrome()
             connected = true
             if (!opts.quiet) console.error(chalk.gray('    Chrome ready'))
             break
@@ -2622,12 +2642,16 @@ async function scrape(
       // Find the page with our share URL using puppeteer
       await new Promise(r => setTimeout(r, 2000)) // Let Chrome load
       let puppeteerPages = await puppeteerBrowser.pages()
-      const shareId = url.split('/').pop() || ''
-      let puppeteerPage: PuppeteerPage | undefined = puppeteerPages.find(p => p.url().includes(shareId)) || puppeteerPages[0]
+      let puppeteerPage: PuppeteerPage | undefined = puppeteerPages.find(p => matchesShareUrl(p.url(), url))
 
       if (!puppeteerPage) {
         puppeteerPage = await puppeteerBrowser.newPage()
+        await puppeteerPage.setUserAgent(userAgent)
+        await puppeteerPage.setExtraHTTPHeaders(realHeaders)
         await puppeteerPage.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
+      } else {
+        await puppeteerPage.setUserAgent(userAgent)
+        await puppeteerPage.setExtraHTTPHeaders(realHeaders)
       }
 
       if (!opts.quiet) console.error(chalk.blue('[2/8] Waiting for page to load...'))
@@ -2651,8 +2675,10 @@ async function scrape(
         // Re-find the page after user interaction
         await new Promise(r => setTimeout(r, 1000))
         puppeteerPages = await puppeteerBrowser.pages()
-        puppeteerPage = puppeteerPages.find(p => p.url().includes(shareId)) || puppeteerPages[0]
+        puppeteerPage = puppeteerPages.find(p => matchesShareUrl(p.url(), url))
         if (!puppeteerPage) throw new AppError('Lost connection to page after verification.')
+        await puppeteerPage.setUserAgent(userAgent)
+        await puppeteerPage.setExtraHTTPHeaders(realHeaders)
         await puppeteerPage.waitForNetworkIdle({ timeout: 5000 }).catch(() => {})
 
         // Verify challenge is now cleared
@@ -2760,6 +2786,7 @@ async function scrape(
 
       // Close puppeteer browser
       await puppeteerBrowser.disconnect()
+      puppeteerBrowser = null
 
       // Restore Chrome to normal state if we launched with temp profile
       if (launchedWithTempProfile && process.platform === 'darwin') {
@@ -3324,6 +3351,13 @@ async function scrape(
     }
     throw err
   } finally {
+    if (puppeteerBrowser) {
+      try {
+        await puppeteerBrowser.disconnect()
+      } catch {
+        // Detach our protocol connection without terminating the attached Chrome.
+      }
+    }
     if (browser) {
       await browser.close()
     }
