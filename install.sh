@@ -87,7 +87,12 @@ resolve_version() {
   local latest_url="https://api.github.com/repos/${OWNER}/${REPO}/releases/latest"
   local tag=""
   info "Resolving latest version..."
-  tag=$(curl -fsSL -A "$HTTP_USER_AGENT" -H "Accept: application/vnd.github.v3+json" "$latest_url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') \
+  # The API answers with minified one-line JSON, so take the first "tag_name"
+  # field rather than the last quoted string on the line (that is the release
+  # body). Quotes inside JSON strings are escaped, so prose cannot fake the key.
+  # awk reads to EOF so curl never sees SIGPIPE under pipefail.
+  tag=$(curl -fsSL -A "$HTTP_USER_AGENT" -H "Accept: application/vnd.github.v3+json" "$latest_url" \
+    | awk -F'"tag_name"[ \t]*:[ \t]*"' '!found && NF > 1 { split($2, a, "\""); print a[1]; found = 1 }') \
     || die "Could not resolve the latest release; pass --version explicitly"
   if [ -n "$tag" ]; then
     VERSION="$tag"
