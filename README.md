@@ -213,6 +213,7 @@ bun run check                 # lint + typecheck
 bun run build:mac-arm64
 bun run build:mac-x64
 bun run build:linux-x64
+bun run build:linux-x64-baseline   # no-AVX2 CPUs; install.sh picks it automatically
 bun run build:linux-arm64
 bun run build:windows-x64     # dist/csctf-windows-x64.exe
 bun run build:all

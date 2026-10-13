@@ -118,7 +118,15 @@ detect_target() {
 
   ASSET=""
   case "${OS}-${ARCH}" in
-    linux-x86_64) ASSET="csctf-linux-x64" ;;
+    linux-x86_64)
+      ASSET="csctf-linux-x64"
+      # Bun's default x64 runtime needs AVX2 and dies with SIGILL without it
+      # (pre-Haswell Xeons, QEMU's default CPU model). Use the baseline build.
+      if [ -r /proc/cpuinfo ] && ! grep -qw avx2 /proc/cpuinfo; then
+        ASSET="csctf-linux-x64-baseline"
+        info "CPU lacks AVX2; using the baseline build"
+      fi
+    ;;
     linux-aarch64) ASSET="csctf-linux-arm64" ;;
     darwin-arm64) ASSET="csctf-macos-arm64" ;;
     darwin-x86_64) ASSET="csctf-macos-x64" ;;
@@ -202,6 +210,13 @@ publish_binary() {
   candidate=$(mktemp "$DEST/.csctf-install.XXXXXX")
   cp "$BINARY_STAGE" "$candidate" || die "Could not prepare the binary"
   chmod 755 "$candidate" || die "Could not set binary permissions"
+  # Never replace a working binary with one this machine cannot run. (The
+  # extension-less temp name is not runnable on Windows shells; skip there.)
+  case "${OS:-}" in
+    msys*|mingw*|cygwin*) ;;
+    *) "$candidate" --version >/dev/null 2>&1 \
+         || die "Prepared ${ASSET:-binary} does not run on this machine (exit $?); ${destination} left unchanged, stage: $candidate" ;;
+  esac
   if [ -f "$destination" ]; then
     backup=$(mktemp "${destination}.previous.XXXXXX")
     cp -p "$destination" "$backup" || die "Could not preserve the incumbent binary"
