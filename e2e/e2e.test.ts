@@ -76,7 +76,7 @@ async function prepareInstallerFixture() {
   const asset = "csctf-" + (process.platform === "darwin" ? "macos" : "linux") + "-" + arch;
   const base = "https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/releases/download/" + encodeURIComponent(version);
   for (const name of [asset + ".sha256", asset]) {
-    const downloaded = await runActual(["curl", "-fSL", "--max-time", "180", "-A", "OpenAI File Downloader, XaiImageApiFetch/1.0", base + "/" + name, "-o", path.join(root, name)], root);
+    const downloaded = await runActual(["curl", "-fSL", "--max-time", "180", "-A", "csctf-installer-e2e (+https://github.com/Dicklesworthstone/chat_shared_conversation_to_file)", base + "/" + name, "-o", path.join(root, name)], root);
     if (downloaded.code !== 0) throw new Error("Real published artifact download failed: " + downloaded.stderr);
   }
   const row = readFileSync(path.join(root, asset + ".sha256"), "utf8").trim().split(/\s+/);

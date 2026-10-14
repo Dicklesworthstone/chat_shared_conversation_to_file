@@ -14,7 +14,7 @@ QUIET=0
 FROM_SOURCE=0
 VERIFY=1
 CHECKSUM_URL="${CHECKSUM_URL:-}"
-HTTP_USER_AGENT="OpenAI File Downloader, XaiImageApiFetch/1.0"
+HTTP_USER_AGENT="csctf-installer (+https://github.com/Dicklesworthstone/chat_shared_conversation_to_file)"
 
 log() { [ "$QUIET" -eq 1 ] && return 0; echo -e "$@"; }
 info() { log "\033[0;34m→\033[0m $*"; }
