@@ -248,7 +248,7 @@ describeHtmlSecurity("csctf static HTML in a real browser", () => {
     writeFileSync(path.join(output, "rendered.html"), html);
     const browser = await chromium.launch({ headless: true });
     try {
-      const context = await browser.newContext({ userAgent: "OpenAI File Downloader, XaiImageApiFetch/1.0" });
+      const context = await browser.newContext();
       const page = await context.newPage();
       await page.setContent(html, { waitUntil: "load" });
       const observed = await page.evaluate(() => ({

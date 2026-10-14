@@ -14,7 +14,8 @@ import TurndownService, { type Rule } from 'turndown'
 import pkg from '../package.json' assert { type: 'json' }
 
 type Provider = 'chatgpt' | 'gemini' | 'grok' | 'claude'
-const HTTP_USER_AGENT = 'OpenAI File Downloader, XaiImageApiFetch/1.0'
+// Plain HTTP requests name this tool. The browser keeps Chromium's own User-Agent.
+const HTTP_USER_AGENT = `csctf/${pkg.version} (+https://github.com/Dicklesworthstone/chat_shared_conversation_to_file)`
 const PROVIDER_PATTERNS: { id: Provider; patterns: RegExp[] }[] = [
   { id: 'gemini', patterns: [/gemini\.google\.com$/i] },
   { id: 'grok', patterns: [/grok\.com$/i, /grok\.x\.ai$/i] },
@@ -2268,9 +2269,7 @@ async function scrape(
   }
 
   const chromeVersion = '131'
-  const userAgent = HTTP_USER_AGENT
   const realHeaders: Record<string, string> = {
-    'user-agent': HTTP_USER_AGENT,
     'sec-ch-ua': `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not_A Brand";v="24"`,
     'sec-ch-ua-platform': '"macOS"',
     'sec-ch-ua-mobile': '?0',
@@ -2351,7 +2350,6 @@ async function scrape(
           headless: useNewHeadless ? false : headless, // Use false when using --headless=new
           executablePath: resolveChromiumExecutable(),
           args: launchArgs,
-          userAgent,
           viewport: { width: 1366, height: 768 },
           ignoreDefaultArgs: ['--enable-automation']
         })
@@ -2598,7 +2596,6 @@ async function scrape(
         // Launch Chrome with temp profile that has debugging enabled
         const child = spawn(chromePath, [
           '--remote-debugging-port=9222',
-          '--user-agent=' + HTTP_USER_AGENT,
           '--user-data-dir=' + tempProfileDir,
           '--no-first-run',
           '--no-default-browser-check',
@@ -2646,11 +2643,9 @@ async function scrape(
 
       if (!puppeteerPage) {
         puppeteerPage = await puppeteerBrowser.newPage()
-        await puppeteerPage.setUserAgent(userAgent)
         await puppeteerPage.setExtraHTTPHeaders(realHeaders)
         await puppeteerPage.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
       } else {
-        await puppeteerPage.setUserAgent(userAgent)
         await puppeteerPage.setExtraHTTPHeaders(realHeaders)
       }
 
@@ -2677,7 +2672,6 @@ async function scrape(
         puppeteerPages = await puppeteerBrowser.pages()
         puppeteerPage = puppeteerPages.find(p => matchesShareUrl(p.url(), url))
         if (!puppeteerPage) throw new AppError('Lost connection to page after verification.')
-        await puppeteerPage.setUserAgent(userAgent)
         await puppeteerPage.setExtraHTTPHeaders(realHeaders)
         await puppeteerPage.waitForNetworkIdle({ timeout: 5000 }).catch(() => {})
 
@@ -2932,7 +2926,6 @@ async function scrape(
       // It's a Browser
       browser = result as Browser
       page = await browser.newPage({
-        userAgent,
         viewport: { width: 1366, height: 768 }
       })
     }
@@ -3021,7 +3014,6 @@ async function scrape(
       } else {
         browser = result2 as Browser
         page = await browser.newPage({
-          userAgent,
           viewport: { width: 1366, height: 768 }
         })
       }
