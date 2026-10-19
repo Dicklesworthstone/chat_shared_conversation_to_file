@@ -124,9 +124,10 @@ describeInstaller("csctf real public installer", () => {
   it("skips an exact reinstall without a new stage, backup or download; --force reinstalls", async () => {
     const f = await installerFixture();
     const target = installerTarget(f.root);
-    const leftovers = () => readdirSync(target.bin).filter((name) => name.startsWith(".csctf-stage.") || name.includes(".previous.")).sort();
+    const leftovers = () => readdirSync(target.bin).filter((name) => name.startsWith(".csctf-stage.") || name.includes(".previous")).sort();
     expect((await runInstaller(f, target)).code).toBe(0);
     const afterFirst = leftovers();
+    expect(afterFirst).toEqual([]);
     const again = await runInstaller(f, target);
     expect(again.code).toBe(0);
     expect(again.stdout).toContain("is already installed");
@@ -136,7 +137,23 @@ describeInstaller("csctf real public installer", () => {
     const forced = await runInstaller(f, target, ["--force"]);
     expect(forced.code).toBe(0);
     expect(forced.stdout).toContain("Checksum verified: " + f.asset);
-    expect(leftovers().length).toBeGreaterThan(afterFirst.length);
+    // The stage is removed and the incumbent is kept as the single rollback copy.
+    expect(leftovers()).toEqual(["csctf.previous"]);
+    expect(digest(target.binary)).toBe(f.expected);
+    expect(digest(target.binary + ".previous")).toBe(f.expected);
+  }, INSTALL_TEST_TIMEOUT_MS);
+
+  it("names, but never removes, stages and backups left by earlier installers", async () => {
+    const f = await installerFixture();
+    const target = installerTarget(f.root);
+    writeFileSync(target.binary, "#!/bin/sh\necho 'csctf v0.0.0-other'\n", { mode: 0o755 });
+    mkdirSync(path.join(target.bin, ".csctf-stage.OLDRUN"));
+    writeFileSync(path.join(target.bin, "csctf.previous.OLDRUN"), "older incumbent", { mode: 0o755 });
+    const installed = await runInstaller(f, target, ["--quiet"]);
+    expect(installed.code).toBe(0);
+    expect(installed.stderr).toContain("2 stage dir(s)/backup(s) left in");
+    expect(readdirSync(target.bin).sort()).toEqual([".csctf-install.lock", ".csctf-stage.OLDRUN", "csctf", "csctf.previous", "csctf.previous.OLDRUN"]);
+    expect(readFileSync(path.join(target.bin, "csctf.previous.OLDRUN"), "utf8")).toBe("older incumbent");
     expect(digest(target.binary)).toBe(f.expected);
   }, INSTALL_TEST_TIMEOUT_MS);
 
@@ -161,6 +178,7 @@ describeInstaller("csctf real public installer", () => {
     expect(failed.stdout).not.toContain("Building from source");
     expect(failed.stdout).not.toContain("Done. Run:");
     expect(readFileSync(target.binary, "utf8")).toBe("retain incumbent bytes");
+    expect(readdirSync(target.bin).sort()).toEqual([".csctf-install.lock", "csctf"]);
   }, INSTALL_TEST_TIMEOUT_MS);
 
   it("missing actual hash tools is fatal even in quiet mode", async () => {
@@ -256,7 +274,8 @@ describeInstaller("csctf real public installer", () => {
     const installed = await runInstaller(f, target);
     expect(installed.code).toBe(0);
     expect(digest(target.binary)).toBe(f.expected);
-    expect(readdirSync(target.bin).some(name => name.startsWith("csctf.previous."))).toBe(true);
+    expect(readdirSync(target.bin).sort()).toEqual([".csctf-install.lock", "csctf", "csctf.previous"]);
+    expect(readFileSync(target.binary + ".previous", "utf8")).toBe("retain incumbent bytes");
   }, INSTALL_TEST_TIMEOUT_MS);
 });
 

@@ -174,7 +174,7 @@ download_binary() {
   local url="https://github.com/${OWNER}/${REPO}/releases/${tag_path}/${ASSET}"
   info "Downloading ${url}"
   curl -fL -A "$HTTP_USER_AGENT" "$url" -o "$TMP/${ASSET}" \
-    || die "Binary download failed; retained stage: $TMP"
+    || die "Binary download failed"
   if [ "$VERIFY" -eq 1 ]; then
     local checksum_target="${CHECKSUM_URL:-${url}.sha256}"
     curl -fL -A "$HTTP_USER_AGENT" "$checksum_target" -o "$TMP/${ASSET}.sha256" \
@@ -207,9 +207,9 @@ build_from_source() {
 }
 
 # Fleet automation reruns this installer nightly. Reinstalling the release that is
-# already in place would only add another retained stage and incumbent backup
-# (~200 MB per run), so an exact match of the installed binary's own version line
-# is a no-op unless --force.
+# already in place would only download ~100 MB to write the same bytes again (and
+# overwrite the previous-binary backup with them), so an exact match of the
+# installed binary's own version line is a no-op unless --force.
 installed_release_matches() {
   local installed="$DEST/$BINARY" reported
   case "${OS:-}" in
@@ -225,6 +225,7 @@ publish_binary() {
   [ ! -L "$destination" ] || die "Refusing to replace a symlink: $destination"
   [ ! -e "$destination" ] || [ -f "$destination" ] || die "Destination is not a regular file: $destination"
   candidate=$(mktemp "$DEST/.csctf-install.XXXXXX")
+  CANDIDATE="$candidate"
   cp "$BINARY_STAGE" "$candidate" || die "Could not prepare the binary"
   chmod 755 "$candidate" || die "Could not set binary permissions"
   # Never replace a working binary with one this machine cannot run. (The
@@ -232,16 +233,38 @@ publish_binary() {
   case "${OS:-}" in
     msys*|mingw*|cygwin*) ;;
     *) "$candidate" --version >/dev/null 2>&1 \
-         || die "Prepared ${ASSET:-binary} does not run on this machine (exit $?); ${destination} left unchanged, stage: $candidate" ;;
+         || die "Prepared ${ASSET:-binary} does not run on this machine (exit $?); ${destination} left unchanged" ;;
   esac
   if [ -f "$destination" ]; then
-    backup=$(mktemp "${destination}.previous.XXXXXX")
-    cp -p "$destination" "$backup" || die "Could not preserve the incumbent binary"
-    info "Retaining incumbent backup: $backup"
+    # Keep exactly one previous binary for a manual rollback. A uniquely named
+    # copy per run left another full binary in DEST on every update.
+    backup="${destination}.previous"
+    [ ! -L "$backup" ] && [ ! -d "$backup" ] || die "Refusing to replace a non-file backup: $backup"
+    BACKUP_TMP=$(mktemp "${backup}.XXXXXX")
+    cp -p "$destination" "$BACKUP_TMP" || die "Could not preserve the incumbent binary"
+    mv -f "$BACKUP_TMP" "$backup" || die "Could not preserve the incumbent binary"
+    BACKUP_TMP=""
+    info "Previous binary kept as $backup"
   fi
   mv -f "$candidate" "$destination" || die "Could not publish the prepared binary"
+  CANDIDATE=""
   [ -x "$destination" ] || die "Installed binary is not executable"
   ok "Installed ${BINARY} to $DEST"
+}
+
+# Installers before this one kept every stage (.csctf-stage.XXXXXX) and a uniquely
+# named backup per run (<binary>.previous.XXXXXX). They are not removed
+# automatically; say what is there and how to reclaim the space.
+note_legacy_leftovers() {
+  local destination="$1" leftover count=0
+  for leftover in "$DEST"/.csctf-stage.* "$destination".previous.*; do
+    [ -e "$leftover" ] || continue
+    [ "$leftover" != "$TMP" ] || continue
+    count=$((count+1))
+  done
+  if [ "$count" -gt 0 ]; then
+    warn "${count} stage dir(s)/backup(s) left in ${DEST} by earlier installer runs are no longer used; to reclaim the space: rm -rf -- \"${DEST}\"/.csctf-stage.* \"${destination}\".previous.*"
+  fi
 }
 
 install_main() {
@@ -255,7 +278,12 @@ if [ "$FROM_SOURCE" -eq 0 ] && [ "$FORCE" -eq 0 ] && installed_release_matches; 
   return 0
 fi
 TMP=$(mktemp -d "$DEST/.csctf-stage.XXXXXX")
-info "Retaining installer stage: $TMP"
+CANDIDATE=""
+BACKUP_TMP=""
+# The stage holds a full copy of the download. Remove it, and any temp file not
+# yet published, however the install ends; otherwise every run (including each
+# nightly update) leaves another copy of the binary in DEST.
+trap 'rm -rf -- "$TMP"; [ -z "$CANDIDATE" ] || rm -f -- "$CANDIDATE"; [ -z "$BACKUP_TMP" ] || rm -f -- "$BACKUP_TMP"' EXIT
 mkdir -p "$DEST"
 
 STEP_TOTAL=6
@@ -287,6 +315,7 @@ case "$OS" in
   msys*|mingw*|cygwin*) case "$BINARY" in *.exe) ;; *) INSTALL_PATH="${INSTALL_PATH}.exe";; esac;;
 esac
 publish_binary "$INSTALL_PATH"
+note_legacy_leftovers "$INSTALL_PATH"
 log_step "Ensuring ${DEST} is on PATH"
 maybe_add_path
 log_step "Finalizing"
@@ -301,7 +330,7 @@ run_locked_install() {
   [ ! -L "$lock_file" ] || die "Refusing a symlink installer lock"
   payload=$(
     declare -p VERSION OWNER REPO BINARY DEST EASY QUIET FROM_SOURCE VERIFY FORCE CHECKSUM_URL HTTP_USER_AGENT
-    declare -f log info ok warn err die maybe_add_path resolve_version detect_target verify_artifact download_binary build_from_source installed_release_matches publish_binary install_main
+    declare -f log info ok warn err die maybe_add_path resolve_version detect_target verify_artifact download_binary build_from_source installed_release_matches publish_binary note_legacy_leftovers install_main
     printf 'set -euo pipefail\ninstall_main\n'
   )
   if command -v flock >/dev/null 2>&1; then
