@@ -13,6 +13,7 @@ EASY=0
 QUIET=0
 FROM_SOURCE=0
 VERIFY=1
+FORCE=0
 CHECKSUM_URL="${CHECKSUM_URL:-}"
 HTTP_USER_AGENT="csctf-installer (+https://github.com/Dicklesworthstone/chat_shared_conversation_to_file)"
 
@@ -25,9 +26,10 @@ die()  { err "$1"; exit 1; }
 
 usage() {
   cat <<'EOFU'
-Usage: install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--from-source] [--easy-mode] [--quiet] [--verify|--no-verify]
+Usage: install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--from-source] [--easy-mode] [--quiet] [--verify|--no-verify] [--force]
 
 Downloaded release checksums are required by default. --no-verify is an explicit opt-out.
+If the requested release is already installed, nothing is downloaded or changed; --force reinstalls it.
 
 Environment overrides:
   VERSION         Tag to install (defaults to latest release)
@@ -49,6 +51,7 @@ while [ $# -gt 0 ]; do
     --easy-mode) EASY=1; shift;;
     --verify) VERIFY=1; shift;;
     --no-verify) VERIFY=0; shift;;
+    --force) FORCE=1; shift;;
     --quiet|-q) QUIET=1; shift;;
     -h|--help) usage; exit 0;;
     *) die "Unknown option: $1";;
@@ -203,6 +206,20 @@ build_from_source() {
   BINARY_STAGE="$bin_path"
 }
 
+# Fleet automation reruns this installer nightly. Reinstalling the release that is
+# already in place would only add another retained stage and incumbent backup
+# (~200 MB per run), so an exact match of the installed binary's own version line
+# is a no-op unless --force.
+installed_release_matches() {
+  local installed="$DEST/$BINARY" reported
+  case "${OS:-}" in
+    msys*|mingw*|cygwin*) case "$BINARY" in *.exe) ;; *) installed="${installed}.exe";; esac;;
+  esac
+  [ -f "$installed" ] && [ ! -L "$installed" ] && [ -x "$installed" ] || return 1
+  reported=$("$installed" --version </dev/null 2>/dev/null) || return 1
+  [ "$reported" = "csctf v${VERSION#v}" ]
+}
+
 publish_binary() {
   local destination="$1" candidate backup
   [ ! -L "$destination" ] || die "Refusing to replace a symlink: $destination"
@@ -233,6 +250,10 @@ case "$VERSION" in
   ""|*[!a-zA-Z0-9._+-]*) die "Invalid release tag: $VERSION";;
 esac
 detect_target
+if [ "$FROM_SOURCE" -eq 0 ] && [ "$FORCE" -eq 0 ] && installed_release_matches; then
+  ok "${BINARY} ${VERSION} is already installed in ${DEST}; nothing to do (--force reinstalls)"
+  return 0
+fi
 TMP=$(mktemp -d "$DEST/.csctf-stage.XXXXXX")
 info "Retaining installer stage: $TMP"
 mkdir -p "$DEST"
@@ -279,8 +300,8 @@ run_locked_install() {
   local lock_file="$DEST/.csctf-install.lock" payload
   [ ! -L "$lock_file" ] || die "Refusing a symlink installer lock"
   payload=$(
-    declare -p VERSION OWNER REPO BINARY DEST EASY QUIET FROM_SOURCE VERIFY CHECKSUM_URL HTTP_USER_AGENT
-    declare -f log info ok warn err die maybe_add_path resolve_version detect_target verify_artifact download_binary build_from_source publish_binary install_main
+    declare -p VERSION OWNER REPO BINARY DEST EASY QUIET FROM_SOURCE VERIFY FORCE CHECKSUM_URL HTTP_USER_AGENT
+    declare -f log info ok warn err die maybe_add_path resolve_version detect_target verify_artifact download_binary build_from_source installed_release_matches publish_binary install_main
     printf 'set -euo pipefail\ninstall_main\n'
   )
   if command -v flock >/dev/null 2>&1; then

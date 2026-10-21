@@ -121,6 +121,36 @@ describeInstaller("csctf real public installer", () => {
     expect(version.stdout).toBe("csctf v" + f.version.replace(/^v/, "") + "\n");
   }, INSTALL_TEST_TIMEOUT_MS);
 
+  it("skips an exact reinstall without a new stage, backup or download; --force reinstalls", async () => {
+    const f = await installerFixture();
+    const target = installerTarget(f.root);
+    const leftovers = () => readdirSync(target.bin).filter((name) => name.startsWith(".csctf-stage.") || name.includes(".previous.")).sort();
+    expect((await runInstaller(f, target)).code).toBe(0);
+    const afterFirst = leftovers();
+    const again = await runInstaller(f, target);
+    expect(again.code).toBe(0);
+    expect(again.stdout).toContain("is already installed");
+    expect(again.stdout).not.toContain("Checksum verified");
+    expect(leftovers()).toEqual(afterFirst);
+    expect(digest(target.binary)).toBe(f.expected);
+    const forced = await runInstaller(f, target, ["--force"]);
+    expect(forced.code).toBe(0);
+    expect(forced.stdout).toContain("Checksum verified: " + f.asset);
+    expect(leftovers().length).toBeGreaterThan(afterFirst.length);
+    expect(digest(target.binary)).toBe(f.expected);
+  }, INSTALL_TEST_TIMEOUT_MS);
+
+  it("replaces an incumbent that reports a different version", async () => {
+    const f = await installerFixture();
+    const target = installerTarget(f.root);
+    writeFileSync(target.binary, "#!/bin/sh\necho 'csctf v0.0.0-other'\n", { mode: 0o755 });
+    const installed = await runInstaller(f, target);
+    expect(installed.code).toBe(0);
+    expect(installed.stdout).not.toContain("is already installed");
+    expect(installed.stdout).toContain("Checksum verified: " + f.asset);
+    expect(digest(target.binary)).toBe(f.expected);
+  }, INSTALL_TEST_TIMEOUT_MS);
+
   it("keeps an incumbent on real missing-release failure without building unrelated source", async () => {
     const f = await installerFixture();
     const target = installerTarget(f.root);
