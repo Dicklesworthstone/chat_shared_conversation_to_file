@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 import chalk from 'chalk'
-import { spawn, spawnSync } from 'child_process'
+import { type ChildProcess, spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import hljs from 'highlight.js'
-import type { Options as MdOptions } from 'markdown-it'
-import MarkdownIt from 'markdown-it'
+import MarkdownIt, { type MarkdownItOptions as MdOptions } from 'markdown-it'
+import net from 'net'
 import os from 'os'
 import path from 'path'
-import { type Browser, type BrowserContext, chromium, type Page } from 'playwright-chromium'
-import puppeteer, { type Browser as PuppeteerBrowser, type Page as PuppeteerPage } from 'puppeteer-core'
+import type { Browser, BrowserContext, Page } from 'playwright-chromium'
+import type { Browser as PuppeteerBrowser, Page as PuppeteerPage } from 'puppeteer-core'
 import readline from 'readline'
 import TurndownService, { type Rule } from 'turndown'
-import pkg from '../package.json' assert { type: 'json' }
+import pkg from '../package.json' with { type: 'json' }
 
 type Provider = 'chatgpt' | 'gemini' | 'grok' | 'claude'
 // Plain HTTP requests name this tool. The browser keeps Chromium's own User-Agent.
@@ -614,6 +614,40 @@ const escapeHtml = (value: string): string =>
 
 const stripProviderPrefix = (title: string): string => title.replace(/^(ChatGPT|Gemini|Grok|Claude)\s*-?\s*/i, '').replace(/\s*\|\s*Claude$/i, '')
 
+// Curated language subset for untagged code fence auto-detection.
+// Explicit language tags (e.g. ```dart, ```dns) still use hljs.getLanguage()
+// directly; restricting highlightAuto avoids mislabeling common code snippets
+// as obscure grammars (such as dns/dart/n1ql/arcade) and bounds grammar work.
+export const AUTO_HIGHLIGHT_LANGUAGES: readonly string[] = [
+  'typescript',
+  'javascript',
+  'python',
+  'bash',
+  'json',
+  'yaml',
+  'sql',
+  'rust',
+  'go',
+  'c',
+  'cpp',
+  'java',
+  'csharp',
+  'ruby',
+  'php',
+  'swift',
+  'kotlin',
+  'xml',
+  'css',
+  'scss',
+  'markdown',
+  'diff',
+  'dockerfile',
+  'makefile',
+  'ini',
+  'graphql',
+  'plaintext'
+]
+
 export function renderHtmlDocument(markdown: string, title: string, source: string, retrieved: string): string {
   const counts = new Map<string, number>()
   const headings: { level: number; text: string; id: string }[] = []
@@ -631,7 +665,7 @@ export function renderHtmlDocument(markdown: string, title: string, source: stri
       const supportedLanguage = language && hljs.getLanguage(language) ? language : undefined
       const highlighted = supportedLanguage
         ? hljs.highlight(raw, { language: supportedLanguage, ignoreIllegals: true })
-        : hljs.highlightAuto(raw)
+        : hljs.highlightAuto(raw, AUTO_HIGHLIGHT_LANGUAGES as string[])
       const label = supportedLanguage || highlighted.language || 'text'
       return `<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">${label}</span></div><pre><code class="hljs language-${label}">${highlighted.value}</code></pre></div>`
     }
@@ -1882,7 +1916,123 @@ function detectProvider(url: string): Provider {
   return 'chatgpt'
 }
 
-async function scrape(
+export async function allocateLoopbackPort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const server = net.createServer()
+    server.unref()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      const port = addr && typeof addr === 'object' ? addr.port : 0
+      server.close(closeErr => {
+        if (closeErr) reject(closeErr)
+        else if (!port) reject(new Error('Failed to allocate loopback port'))
+        else resolve(port)
+      })
+    })
+  })
+}
+
+export function createPrivateCdpProfileDir(prefix = 'csctf-cdp-profile-'): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(dir, 0o700)
+    } catch {
+      // Best effort on filesystems that ignore POSIX mode bits.
+    }
+  }
+  return dir
+}
+
+export async function terminateOwnedChild(child: ChildProcess, graceMs = 3000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await new Promise<void>(resolve => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(killTimer)
+      clearTimeout(hardTimer)
+      child.removeListener('exit', finish)
+      child.removeListener('close', finish)
+      resolve()
+    }
+    child.once('exit', finish)
+    child.once('close', finish)
+    try {
+      child.kill('SIGTERM')
+    } catch {
+      finish()
+      return
+    }
+    const killTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          // Process already exited.
+        }
+      }
+    }, graceMs)
+    const hardTimer = setTimeout(finish, graceMs + 1000)
+  })
+}
+
+async function loadPlaywrightChromium() {
+  const { chromium } = await import('playwright-chromium')
+  return chromium
+}
+
+async function loadPuppeteerCore() {
+  const mod = await import('puppeteer-core')
+  return mod.default
+}
+
+export function resolveChromiumExecutablePath(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+  const candidates: string[] = []
+  if (env.CSCTF_CHROME_PATH) candidates.push(env.CSCTF_CHROME_PATH)
+  if (platform === 'darwin') {
+    candidates.push(
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+    )
+  } else if (platform === 'win32') {
+    const roots = [env.LOCALAPPDATA, env.PROGRAMFILES, env['PROGRAMFILES(X86)']].filter(
+      (v): v is string => Boolean(v)
+    )
+    for (const root of roots) {
+      candidates.push(
+        path.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+      )
+    }
+    candidates.push(
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+    )
+  } else {
+    candidates.push(
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/usr/bin/microsoft-edge'
+    )
+  }
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
+export async function scrape(
   url: string,
   timeoutMs: number,
   provider: Provider,
@@ -1900,27 +2050,20 @@ async function scrape(
   let browser: Browser | null = null
   let context: BrowserContext | null = null
   let puppeteerBrowser: PuppeteerBrowser | null = null
+  let cdpOwnedPage: PuppeteerPage | null = null
+  let ownedCdpChild: ChildProcess | null = null
+  let ownedCdpProfileDir: string | null = null
   let page!: Page
   let currentHeadless = opts.headless
-  const resolveChromiumExecutable = (): string | undefined => {
-    const candidates =
-      process.platform === 'darwin'
-        ? [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta'
-          ]
-        : process.platform === 'win32'
-        ? [
-            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
-          ]
-        : [
-            '/usr/bin/google-chrome',
-            '/usr/bin/chromium-browser',
-            '/usr/bin/chromium'
-          ]
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) return candidate
+  const resolveChromiumExecutable = async (): Promise<string | undefined> => {
+    const sysPath = resolveChromiumExecutablePath()
+    if (sysPath) return sysPath
+    try {
+      const chromium = await loadPlaywrightChromium()
+      const pwExec = chromium.executablePath()
+      if (pwExec && fs.existsSync(pwExec)) return pwExec
+    } catch {
+      // Playwright browser cache may not be populated yet.
     }
     return undefined
   }
@@ -2346,9 +2489,10 @@ async function scrape(
             }
           }
         }
+        const chromium = await loadPlaywrightChromium()
         return chromium.launchPersistentContext(tempProfile, {
           headless: useNewHeadless ? false : headless, // Use false when using --headless=new
-          executablePath: resolveChromiumExecutable(),
+          executablePath: resolveChromiumExecutablePath(),
           args: launchArgs,
           viewport: { width: 1366, height: 768 },
           ignoreDefaultArgs: ['--enable-automation']
@@ -2357,9 +2501,10 @@ async function scrape(
     }
 
     // Standard launch without profile
+    const chromium = await loadPlaywrightChromium()
     const b = await chromium.launch({
       headless: useNewHeadless ? false : headless, // Use false when using --headless=new
-      executablePath: resolveChromiumExecutable(),
+      executablePath: resolveChromiumExecutablePath(),
       args: launchArgs,
       ignoreDefaultArgs: ['--enable-automation']
     })
@@ -2386,10 +2531,10 @@ async function scrape(
     for (let attempt = 0; attempt < 2; attempt++) {
 
     if (useCdp) {
-      const endpoint = opts.cdpEndpoint || 'http://localhost:9222'
-      const connectToChrome = async (): Promise<PuppeteerBrowser> => {
+      const explicitEndpoint = opts.cdpEndpoint
+      const connectToChrome = async (targetEndpoint: string): Promise<PuppeteerBrowser> => {
         // Puppeteer's browserURL discovery does not forward its WebSocket headers.
-        const response = await fetch(new URL('/json/version', endpoint), {
+        const response = await fetch(new URL('/json/version', targetEndpoint), {
           headers: { 'User-Agent': HTTP_USER_AGENT },
           signal: AbortSignal.timeout(timeoutMs)
         })
@@ -2402,6 +2547,7 @@ async function scrape(
         if (webSocketUrl.protocol !== 'ws:' && webSocketUrl.protocol !== 'wss:') {
           throw new Error('Chrome discovery returned an invalid WebSocket protocol')
         }
+        const puppeteer = await loadPuppeteerCore()
         return puppeteer.connect({
           browserWSEndpoint: webSocketUrl.href,
           headers: { 'User-Agent': HTTP_USER_AGENT },
@@ -2409,240 +2555,114 @@ async function scrape(
         })
       }
 
-      // Track whether we launched Chrome with temp profile (for restoration later)
-      let launchedWithTempProfile = false
-      let tempProfileDir = ''
-
-      // Detect which Chrome variant is installed/running (prefer Canary, then regular Chrome)
-      const chromePaths = [
-        '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-      ]
-      const chromeApps = [
-        { process: 'Google Chrome Canary', app: 'Google Chrome Canary', path: chromePaths[0] },
-        { process: 'Google Chrome', app: 'Google Chrome', path: chromePaths[1] }
-      ]
-
-      // Find which Chrome is running or use the first available
-      let activeChrome = chromeApps.find(c => {
-        const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
-        return check.status === 0
-      })
-
-      // If none running, find first installed
-      if (!activeChrome) {
-        activeChrome = chromeApps.find(c => fs.existsSync(c.path)) || chromeApps[1]
-      }
-
-      const chromePath = resolveChromiumExecutable() || activeChrome.path
-      const chromeAppName = activeChrome.app
-
-      // Try to connect to existing Chrome with debugging using puppeteer-core (bun compatible)
+      // Separate attach vs owned-launch lifecycles:
+      // 1. Explicit --cdp attaches ONLY to that endpoint and fails without launching or killing anything.
+      // 2. Automatic CDP fallback tries read-only attach to localhost:9222; if unavailable, it launches
+      //    an isolated owned Chrome child with an ephemeral loopback port and fresh private profile dir.
+      //    It never terminates, quits, or mutates any unrelated Chrome session.
       let connected = false
-      try {
-        if (!opts.quiet) console.error(chalk.blue(`[1/8] Connecting to Chrome...`))
-        puppeteerBrowser = await connectToChrome()
-        connected = true
-        if (!opts.quiet) console.error(chalk.gray('    Connected to existing Chrome instance'))
-      } catch (connectErr) {
-        // Log the actual error for debugging
-        console.error(chalk.gray(`    CDP connection failed: ${connectErr instanceof Error ? connectErr.message : String(connectErr)}`))
-        // Chrome not running with debugging - check if any Chrome variant is running
-        const chromeAlreadyRunning = chromeApps.some(c => {
-          const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
-          return check.status === 0
-        })
-
-        if (chromeAlreadyRunning && process.platform === 'darwin') {
-          // Save all open Chrome tabs before restarting
-          let savedTabs: string[] = []
-          const saveTabsScript = `
-            tell application "${chromeAppName}"
-              set tabList to {}
-              repeat with w in windows
-                repeat with t in tabs of w
-                  set end of tabList to URL of t
-                end repeat
-              end repeat
-              return tabList
-            end tell
-          `
-          const result = spawnSync('osascript', ['-e', saveTabsScript], { encoding: 'utf-8' })
-          if (result.stdout) {
-            savedTabs = result.stdout.trim().split(', ').filter(u => u && u !== 'missing value')
-          }
-
-          // Offer to automatically restart Chrome
-          console.error(chalk.yellow('\n⚠️  Chrome needs to restart with remote debugging enabled.'))
-          if (savedTabs.length > 0) {
-            console.error(chalk.gray(`    Your ${savedTabs.length} open tab(s) will be saved and restored automatically.\n`))
-          }
-          console.error(chalk.white('    Press Enter to restart Chrome, or Ctrl+C to cancel...'))
-
-          const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-          await new Promise<void>(resolve => rl.question('', () => { rl.close(); resolve() }))
-
-          // Save tabs to temp file for restoration (include app name)
-          if (savedTabs.length > 0) {
-            const tabsFile = path.join(os.tmpdir(), 'csctf-chrome-tabs.json')
-            fs.writeFileSync(tabsFile, JSON.stringify({ app: chromeAppName, tabs: savedTabs }, null, 2))
-          }
-
-          // Gracefully quit Chrome using AppleScript
-          console.error(chalk.gray('    Closing Chrome...'))
-          spawnSync('osascript', ['-e', `tell application "${chromeAppName}" to quit`], { encoding: 'utf-8' })
-
-          // Wait for Chrome to fully close
-          for (let i = 0; i < 10; i++) {
-            await new Promise(r => setTimeout(r, 500))
-            const stillRunning = chromeApps.some(c => {
-              const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
-              return check.status === 0
-            })
-            if (!stillRunning) break
-          }
-
-          // Force kill any remaining Chrome processes (background helpers, etc.)
-          spawnSync('pkill', ['-9', '-f', 'Google Chrome'], { encoding: 'utf-8' })
-          await new Promise(r => setTimeout(r, 1000))
-
-          // Final verification - check for main Chrome processes only
-          const stillRunning = chromeApps.some(c => {
-            const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
-            return check.status === 0
-          })
-          if (stillRunning) {
-            throw new AppError(
-              'Chrome is still running.',
-              'Please close Chrome manually and try again.'
-            )
-          }
-        } else if (chromeAlreadyRunning) {
-          // Non-macOS: ask user to close manually
-          console.error(chalk.yellow('\n⚠️  Chrome is running but without remote debugging enabled.'))
-          console.error(chalk.yellow('    Please close ALL Chrome windows, then press Enter to continue...\n'))
-
-          const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-          await new Promise<void>(resolve => rl.question('', () => { rl.close(); resolve() }))
-
-          await new Promise(r => setTimeout(r, 1000))
-          const stillRunning = chromeApps.some(c => {
-            const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
-            return check.status === 0
-          })
-          if (stillRunning) {
-            throw new AppError('Chrome is still running.', 'Please close all Chrome windows and try again.')
-          }
-        }
-
-        // Now launch Chrome with debugging
-        if (!opts.quiet) console.error(chalk.blue(`[1/8] Launching Chrome with remote debugging...`))
-
-        // Chrome requires a non-default user-data-dir for remote debugging
-        // Copy the user's cookies to a temp profile to preserve their session
-        tempProfileDir = path.join(os.tmpdir(), 'csctf-chrome-debug')
-        const tempDefaultDir = path.join(tempProfileDir, 'Default')
-
-        // Find user's Chrome profile directory
-        let userProfileDir: string | null = null
-        if (process.platform === 'darwin') {
-          const chromeProfilePaths = [
-            path.join(os.homedir(), 'Library/Application Support/Google/Chrome/Default'),
-            path.join(os.homedir(), 'Library/Application Support/Google/Chrome Canary/Default')
-          ]
-          userProfileDir = chromeProfilePaths.find(p => fs.existsSync(path.join(p, 'Cookies'))) || null
-        } else if (process.platform === 'win32') {
-          const localAppData = process.env.LOCALAPPDATA || ''
-          userProfileDir = path.join(localAppData, 'Google/Chrome/User Data/Default')
-        } else {
-          userProfileDir = path.join(os.homedir(), '.config/google-chrome/Default')
-        }
-
-        // Create temp profile with copied cookies
-        if (!fs.existsSync(tempDefaultDir)) {
-          fs.mkdirSync(tempDefaultDir, { recursive: true })
-        }
-
-        if (userProfileDir && fs.existsSync(userProfileDir)) {
-          // Copy essential session files (cookies, login data, local storage)
-          const filesToCopy = ['Cookies', 'Login Data', 'Web Data']
-          for (const file of filesToCopy) {
-            const src = path.join(userProfileDir, file)
-            const dest = path.join(tempDefaultDir, file)
-            if (fs.existsSync(src)) {
-              try {
-                fs.copyFileSync(src, dest)
-              } catch {
-                // Some files may be locked, that's ok
-              }
-            }
-          }
-          // Copy Sessions folder if it exists
-          const sessionsDir = path.join(userProfileDir, 'Sessions')
-          const destSessionsDir = path.join(tempDefaultDir, 'Sessions')
-          if (fs.existsSync(sessionsDir)) {
-            try {
-              if (!fs.existsSync(destSessionsDir)) fs.mkdirSync(destSessionsDir)
-              for (const f of fs.readdirSync(sessionsDir)) {
-                fs.copyFileSync(path.join(sessionsDir, f), path.join(destSessionsDir, f))
-              }
-            } catch {
-              // Ignore copy errors
-            }
-          }
-          if (!opts.quiet) console.error(chalk.gray('    Copied session cookies to temp profile'))
-        }
-
-        // Launch Chrome with temp profile that has debugging enabled
-        const child = spawn(chromePath, [
-          '--remote-debugging-port=9222',
-          '--user-data-dir=' + tempProfileDir,
-          '--no-first-run',
-          '--no-default-browser-check',
-          url
-        ], {
-          detached: true,
-          stdio: 'ignore'
-        })
-        child.unref()
-        launchedWithTempProfile = true
-
-        if (!child.pid) {
+      if (explicitEndpoint !== undefined) {
+        if (!opts.quiet) console.error(chalk.blue(`[1/8] Connecting to Chrome CDP endpoint (${explicitEndpoint})...`))
+        try {
+          puppeteerBrowser = await connectToChrome(explicitEndpoint)
+          connected = true
+          if (!opts.quiet) console.error(chalk.gray('    Attached to existing Chrome instance'))
+        } catch (connectErr) {
+          const detail = connectErr instanceof Error ? connectErr.message : String(connectErr)
           throw new AppError(
-            `Could not launch Chrome.`,
-            `Ensure Chrome is installed at: ${chromePath}`
+            `Could not connect to Chrome CDP endpoint ${explicitEndpoint}: ${detail}`,
+            'Start Chrome with --remote-debugging-port=<port> or verify the --cdp URL and try again.'
           )
         }
+      } else {
+        const defaultAttachEndpoint = 'http://127.0.0.1:9222'
+        try {
+          if (!opts.quiet) console.error(chalk.blue(`[1/8] Connecting to Chrome...`))
+          puppeteerBrowser = await connectToChrome(defaultAttachEndpoint)
+          connected = true
+          if (!opts.quiet) console.error(chalk.gray('    Attached to existing Chrome instance'))
+        } catch (connectErr) {
+          if (!opts.quiet) {
+            console.error(
+              chalk.gray(
+                `    No debuggable Chrome at ${defaultAttachEndpoint} (${connectErr instanceof Error ? connectErr.message : String(connectErr)}); launching isolated Chrome session...`
+              )
+            )
+          }
 
-        // Wait for Chrome to start and become available
-        if (!opts.quiet) console.error(chalk.gray('    Waiting for Chrome to start...'))
-        for (let attempt = 0; attempt < 15; attempt++) {
-          await new Promise(r => setTimeout(r, 1000))
-          try {
-            puppeteerBrowser = await connectToChrome()
-            connected = true
-            if (!opts.quiet) console.error(chalk.gray('    Chrome ready'))
-            break
-          } catch {
-            // Keep trying
+          const chromePath = await resolveChromiumExecutable()
+          if (!chromePath) {
+            throw new AppError(
+              'Could not find a Chrome or Chromium executable for isolated CDP launch.',
+              'Install Chrome/Chromium, set CSCTF_CHROME_PATH, or pass --cdp <endpoint> to attach to a running browser.'
+            )
+          }
+
+          const ownedPort = await allocateLoopbackPort()
+          const ownedEndpoint = `http://127.0.0.1:${ownedPort}`
+          ownedCdpProfileDir = createPrivateCdpProfileDir()
+
+          const launchArgs = [
+            `--remote-debugging-port=${ownedPort}`,
+            `--user-data-dir=${ownedCdpProfileDir}`,
+            '--no-first-run',
+            '--no-default-browser-check'
+          ]
+          if (process.env.CSCTF_CDP_HEADLESS === '1') {
+            launchArgs.push('--headless=new')
+          }
+          launchArgs.push(url)
+
+          if (!opts.quiet) console.error(chalk.blue(`[1/8] Launching isolated Chrome session on ${ownedEndpoint}...`))
+          const child = spawn(chromePath, launchArgs, {
+            detached: false,
+            stdio: 'ignore'
+          })
+          if (!child.pid) {
+            throw new AppError(
+              'Could not launch isolated Chrome process.',
+              `Ensure Chrome is installed at: ${chromePath}`
+            )
+          }
+          ownedCdpChild = child
+
+          if (!opts.quiet) console.error(chalk.gray('    Waiting for isolated Chrome to become ready...'))
+          const deadline = Date.now() + Math.min(timeoutMs, 15000)
+          while (Date.now() < deadline) {
+            if (child.exitCode !== null || child.signalCode !== null) {
+              throw new AppError(
+                `Isolated Chrome exited before CDP became ready (code=${child.exitCode ?? 'none'}, signal=${child.signalCode ?? 'none'}).`,
+                `Ensure Chrome can start from: ${chromePath}`
+              )
+            }
+            try {
+              puppeteerBrowser = await connectToChrome(ownedEndpoint)
+              connected = true
+              if (!opts.quiet) console.error(chalk.gray('    Isolated Chrome ready'))
+              break
+            } catch {
+              await new Promise(r => setTimeout(r, 250))
+            }
           }
         }
       }
 
       if (!connected || !puppeteerBrowser) {
         throw new AppError(
-          `Could not connect to Chrome.`,
-          `Close all Chrome windows and try again. The tool needs to launch Chrome with special debugging enabled.`
+          'Could not connect to Chrome CDP endpoint.',
+          'Verify Chrome can launch or pass --cdp <endpoint> pointing to a running Chrome with --remote-debugging-port.'
         )
       }
 
-      // Find the page with our share URL using puppeteer
-      await new Promise(r => setTimeout(r, 2000)) // Let Chrome load
+      // Find an existing tab strictly matching our share URL, or open our own tab.
       let puppeteerPages = await puppeteerBrowser.pages()
       let puppeteerPage: PuppeteerPage | undefined = puppeteerPages.find(p => matchesShareUrl(p.url(), url))
 
       if (!puppeteerPage) {
         puppeteerPage = await puppeteerBrowser.newPage()
+        if (!ownedCdpChild) {
+          cdpOwnedPage = puppeteerPage
+        }
         await puppeteerPage.setExtraHTTPHeaders(realHeaders)
         await puppeteerPage.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
       } else {
@@ -2776,110 +2796,6 @@ async function scrape(
             unknownIdx++
           }
         }
-      }
-
-      // Close puppeteer browser
-      await puppeteerBrowser.disconnect()
-      puppeteerBrowser = null
-
-      // Restore Chrome to normal state if we launched with temp profile
-      if (launchedWithTempProfile && process.platform === 'darwin') {
-        if (!opts.quiet) console.error(chalk.blue('[7/8] Restoring Chrome to normal...'))
-
-        // Close Chrome (running on temp profile)
-        spawnSync('osascript', ['-e', `tell application "${chromeAppName}" to quit`], { encoding: 'utf-8' })
-
-        // Wait for Chrome to fully close
-        for (let i = 0; i < 10; i++) {
-          await new Promise(r => setTimeout(r, 500))
-          const stillRunning = chromeApps.some(c => {
-            const check = spawnSync('pgrep', ['-x', c.process], { encoding: 'utf-8' })
-            return check.status === 0
-          })
-          if (!stillRunning) break
-        }
-
-        // Force kill any remaining Chrome processes
-        spawnSync('pkill', ['-9', '-f', 'Google Chrome'], { encoding: 'utf-8' })
-        await new Promise(r => setTimeout(r, 500))
-
-        // Clean up temp profile directory
-        if (tempProfileDir) {
-          try {
-            fs.rmSync(tempProfileDir, { recursive: true, force: true })
-          } catch {
-            // Ignore cleanup errors
-          }
-        }
-
-        // Check if we have tabs to restore
-        const tabsFile = path.join(os.tmpdir(), 'csctf-chrome-tabs.json')
-        let savedTabsData: { app: string; tabs: string[] } | null = null
-        if (fs.existsSync(tabsFile)) {
-          try {
-            savedTabsData = JSON.parse(fs.readFileSync(tabsFile, 'utf-8'))
-          } catch {
-            // Ignore parse errors
-          }
-        }
-
-        if (savedTabsData && savedTabsData.tabs.length > 0) {
-          if (!opts.quiet) console.error(chalk.blue('[8/8] Restoring your tabs...'))
-
-          // Relaunch Chrome with default profile and first tab
-          spawn(chromePath, [savedTabsData.tabs[0]], {
-            detached: true,
-            stdio: 'ignore'
-          }).unref()
-
-          // Wait for Chrome to start
-          await new Promise(r => setTimeout(r, 2000))
-
-          // Open remaining tabs via AppleScript
-          if (savedTabsData.tabs.length > 1) {
-            const remainingTabs = savedTabsData.tabs.slice(1)
-            for (const tabUrl of remainingTabs) {
-              // Use AppleScript to open each tab in a new tab (not new window)
-              const openTabScript = `
-                tell application "${savedTabsData.app}"
-                  activate
-                  tell front window
-                    make new tab with properties {URL:"${tabUrl}"}
-                  end tell
-                end tell
-              `
-              spawnSync('osascript', ['-e', openTabScript], { encoding: 'utf-8' })
-              await new Promise(r => setTimeout(r, 100)) // Small delay between tabs
-            }
-          }
-
-          if (!opts.quiet) console.error(chalk.green(`    ✔ Restored ${savedTabsData.tabs.length} tab(s)`))
-
-          // Clean up tabs file
-          try {
-            fs.unlinkSync(tabsFile)
-          } catch {
-            // Ignore cleanup errors
-          }
-        } else {
-          // No tabs to restore, just relaunch Chrome normally
-          if (!opts.quiet) console.error(chalk.gray('    Chrome closed (no tabs to restore)'))
-        }
-      } else if (launchedWithTempProfile) {
-        // Non-macOS: just close Chrome, can't restore tabs automatically
-        if (!opts.quiet) console.error(chalk.blue('[7/8] Closing temporary Chrome session...'))
-        spawnSync('pkill', ['-f', 'remote-debugging-port=9222'], { encoding: 'utf-8' })
-        await new Promise(r => setTimeout(r, 500))
-
-        // Clean up temp profile
-        if (tempProfileDir) {
-          try {
-            fs.rmSync(tempProfileDir, { recursive: true, force: true })
-          } catch {
-            // Ignore cleanup errors
-          }
-        }
-        if (!opts.quiet) console.error(chalk.gray('    Temporary session closed'))
       }
 
       // Convert to markdown using turndown
@@ -3343,53 +3259,35 @@ async function scrape(
     }
     throw err
   } finally {
+    if (cdpOwnedPage && !ownedCdpChild) {
+      await cdpOwnedPage.close().catch(() => {})
+      cdpOwnedPage = null
+    }
     if (puppeteerBrowser) {
       try {
         await puppeteerBrowser.disconnect()
       } catch {
         // Detach our protocol connection without terminating the attached Chrome.
       }
+      puppeteerBrowser = null
+    }
+    if (ownedCdpChild) {
+      await terminateOwnedChild(ownedCdpChild)
+      ownedCdpChild = null
+    }
+    if (ownedCdpProfileDir && process.env.CSCTF_RETAIN_CDP_PROFILE !== '1') {
+      try {
+        fs.rmSync(ownedCdpProfileDir, { recursive: true, force: true })
+      } catch {
+        // Ignore best-effort cleanup errors on our owned temporary profile.
+      }
+      ownedCdpProfileDir = null
     }
     if (browser) {
-      await browser.close()
+      await browser.close().catch(() => {})
     }
     if (context) {
       await context.close().catch(() => {})
-    }
-
-    // Restore saved Chrome tabs if we had to close Chrome for CDP mode
-    if (process.platform === 'darwin') {
-      const tabsFile = path.join(os.tmpdir(), 'csctf-chrome-tabs.json')
-      if (fs.existsSync(tabsFile)) {
-        try {
-          const saved = JSON.parse(fs.readFileSync(tabsFile, 'utf-8'))
-          // Handle both old format (array) and new format ({ app, tabs })
-          const savedTabs: string[] = Array.isArray(saved) ? saved : (saved.tabs || [])
-          const chromeApp = saved.app || 'Google Chrome'
-          const chromePaths: Record<string, string> = {
-            'Google Chrome Canary': '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-            'Google Chrome': '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-          }
-          const chromePath = chromePaths[chromeApp] || chromePaths['Google Chrome']
-
-          if (savedTabs.length > 0) {
-            if (!opts.quiet) console.error(chalk.blue('\n[8/8] Restoring your Chrome tabs...'))
-            // Reopen Chrome with saved tabs
-            const tabArgs = savedTabs.slice(0, 20) // Limit to 20 tabs to avoid issues
-            spawn(chromePath, tabArgs, {
-              detached: true,
-              stdio: 'ignore'
-            }).unref()
-            if (!opts.quiet) console.error(chalk.gray(`    Restored ${Math.min(savedTabs.length, 20)} tab(s)`))
-            if (!opts.quiet && savedTabs.length > 20) {
-              console.error(chalk.gray(`    (${savedTabs.length - 20} additional tabs not restored to avoid overload)`))
-            }
-          }
-          fs.unlinkSync(tabsFile) // Clean up
-        } catch {
-          // Ignore restoration errors
-        }
-      }
     }
   }
 }

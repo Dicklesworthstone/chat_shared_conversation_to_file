@@ -6,7 +6,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readd
 import os from "os";
 import path from "path";
 import { chromium } from "playwright-chromium";
-import { renderHtmlDocument } from "../src/index";
+import { renderHtmlDocument, resolveChromiumExecutablePath } from "../src/index";
 
 const RUN_E2E = process.env.CSCTF_E2E === "1";
 const SHARE_URL =
@@ -295,7 +295,7 @@ describeHtmlSecurity("csctf static HTML in a real browser", () => {
     ].join("\n\n");
     const html = renderHtmlDocument(markdown, "Untrusted markup", "https://example.com", "2026-10-09T00:00:00.000Z");
     writeFileSync(path.join(output, "rendered.html"), html);
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ headless: true, executablePath: resolveChromiumExecutablePath() });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
