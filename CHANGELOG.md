@@ -6,9 +6,35 @@ Versions follow [Semantic Versioning](https://semver.org/). Each tagged version 
 
 ---
 
-## [Unreleased] (after v0.4.5)
+## [v0.5.0] -- 2026-11-21 (Release)
 
-Changes on `main` since the v0.4.5 tag, not yet part of any release.
+Security hardening, isolated CDP browser lifecycle, curated syntax highlighting, standalone Playwright >= 1.60 bundling, and comprehensive dependency upgrades.
+
+### Security & HTML Rendering
+
+- **Untrusted raw HTML escaping**: escape raw active HTML in rendered conversation documents and add real-browser HTML security E2E coverage ([`28cfdd7`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/28cfdd7))
+- **Isolated CDP lifecycle (Fixes #2)**: removed broad Chrome process termination (`pkill`), AppleScript tab scraping (`osascript`), and fixed shared profile/tab files in CDP fallback mode; explicit `--cdp` now attaches strictly and fails closed without launching or stopping any browser, while automatic fallback launches an isolated owned Chrome process on an ephemeral loopback port with a private `0700` profile directory and terminates only the process it spawned
+- **Zero dependency advisories**: upgraded runtime and development dependencies (`markdown-it` 15.0.3, `playwright-chromium` 1.65.1, `puppeteer-core` 25.18.1, `highlight.js` 11.12.0, `chalk` 6.0.1, `turndown` 7.2.5, `eslint` 10.15.0, `typescript-eslint` 8.73.0, `typescript` 6.0.3, `@types/node` 24.19.2, `bun-types` 1.4.5, `picomatch >= 4.0.4`), eliminating 57 `bun audit` vulnerabilities
+
+### Syntax Highlighting & Performance
+
+- **Curated `highlight.js` auto-detection (Fixes #6)**: scoped untagged code-block auto-detection (`hljs.highlightAuto`) to a curated 27-language mainstream set (`AUTO_HIGHLIGHT_LANGUAGES`) to eliminate mislabeling as `dns`/`dart`/`n1ql`/`arcade` while preserving explicit language tags and cutting untagged highlight latency by ~86%
+- **Lazy browser engine loading**: defer importing `playwright-chromium` and `puppeteer-core` until browser scraping runs, reducing CLI `--version` and `--help` startup latency by ~20-25%
+
+### Build & Packaging
+
+- **Playwright >= 1.60 standalone bundling (Fixes #5)**: updated `scripts/patch-playwright.js` to patch both the bundled `playwright-core >= 1.60` layout (`lib/package.js`, `lib/serverRegistry.js`, `lib/coreBundle.js`) and legacy layouts idempotently, failing closed with a non-zero exit if expected targets are missing
+
+### Installer & HTTP Hygiene
+
+- **Installer hardening (Fixes #4)**: stop leaving a duplicate binary copy in `DEST` on every run ([`c76f38a`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/c76f38a)), skip reinstalling when the target release is already installed ([`04fef71`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/04fef71)), select `linux-x64-baseline` on CPUs without AVX2 ([`91e3d05`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/91e3d05)), parse minified GitHub release JSON reliably ([`072c4d9`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/072c4d9)), and harden checksum/lock safety ([`28cfdd7`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/28cfdd7))
+- **Honest HTTP User-Agent**: identify `csctf` honestly in plain HTTP requests from both the CLI and installer while leaving Chromium's native browser User-Agent unchanged ([`fbe36c8`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/fbe36c8), [`10b3d0f`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/10b3d0f))
+
+---
+
+## [v0.4.6] -- 2026-08-24 (Release)
+
+Maintenance, licensing, and release pipeline updates.
 
 ### CI / Infrastructure
 
@@ -24,6 +50,7 @@ Changes on `main` since the v0.4.5 tag, not yet part of any release.
 - Update Node.js dependencies to latest stable versions ([`0998dd6`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/0998dd642054abdb88c828d2fc43eacde4d0f41e))
 - Add GitHub social preview image ([`1aa3b5c`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/1aa3b5c23ec3c6592d907b91f6e0fe3225aca608))
 - Update AGENTS.md with project context ([`ff994cd`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/ff994cda525c6cc3c6a6874120da379bccc782e1), [`8fd16ef`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/8fd16ef43dd866c3758a29180fd6816c342126c7))
+- Release `v0.4.6` ([`0644370`](https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/commit/0644370))
 
 ---
 
@@ -321,7 +348,8 @@ First tagged version. This tag captures the full initial development sprint (30 
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/compare/v0.4.5...HEAD
+[v0.5.0]: https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/compare/v0.4.6...v0.5.0
+[v0.4.6]: https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/compare/v0.4.5...v0.4.6
 [v0.4.5]: https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/compare/v0.4.4...v0.4.5
 [v0.4.4]: https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/compare/v0.4.3...v0.4.4
 [v0.4.3]: https://github.com/Dicklesworthstone/chat_shared_conversation_to_file/compare/v0.4.2...v0.4.3
